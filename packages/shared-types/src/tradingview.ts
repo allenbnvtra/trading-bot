@@ -232,6 +232,24 @@ export function normalizeTradingViewPayload(
   };
 }
 
+// --- BullMQ job contract ---------------------------------------------------
+
+/**
+ * Shared by apps/api (producer) and apps/worker (consumer) — unlike
+ * Milestone 1's BACKTEST_RUN_QUEUE constants (duplicated by file in each
+ * app "by convention"), this one is a real shared import: both apps already
+ * depend on @trading-copilot/shared-types, so there's no reason to risk the
+ * two copies drifting. The payload is intentionally minimal — the worker
+ * re-fetches everything else from Postgres via the id, so Postgres stays
+ * the single source of truth and the job payload can never go stale.
+ */
+export const TRADINGVIEW_WEBHOOK_QUEUE = "tradingview-webhook-event";
+export const TRADINGVIEW_WEBHOOK_JOB = "process";
+
+export interface TradingViewWebhookJobPayload {
+  inboundWebhookEventId: string;
+}
+
 // --- Admin/inspection query schema ---------------------------------------
 
 /** GET /webhooks/tradingview/events query filters — the admin/inspection surface (section 22). */

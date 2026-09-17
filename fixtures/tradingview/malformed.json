@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "source": "TRADINGVIEW",
+  "strategyKey": "ema-trend-pullback",
+  "strategyVersion": "1.0.0",
+  "exchange": "CME",
+  "symbol": "NQ1!",
+  "timeframe": "5",
+  "signal": "SETUP_CANDIDATE",
+  "direction": "SIDEWAYS",
+  "barTime": "not-a-valid-timestamp",
+  "firedAt": "2026-09-18T03:30:01.000Z",
+  "open": "20100.00",
+  "high": "1e5",
+  "low": "20090.00",
+  "close": "not-a-number",
+  "volume": "-50",
+  "metadata": {}
+}

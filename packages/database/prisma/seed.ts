@@ -24,6 +24,7 @@ import * as marketSnapshotsRepository from "../src/repositories/market-snapshots
 import * as setupsRepository from "../src/repositories/setups";
 import * as riskCalculationsRepository from "../src/repositories/risk-calculations";
 import * as journalTradesRepository from "../src/repositories/journal-trades";
+import * as tradingViewInstrumentMappingsRepository from "../src/repositories/tradingview-instrument-mappings";
 
 // ---------------------------------------------------------------------------
 // Deterministic PRNG (mulberry32) — never Math.random(). Same seed always
@@ -384,6 +385,38 @@ async function seedDemoJournalLifecycle(
   );
 }
 
+// ---------------------------------------------------------------------------
+// Milestone 3 demo: one exchange+symbol -> Instrument mapping, exercising
+// tradingview-instrument-mappings.ts's own idempotent check-exists-before-
+// create pattern (resolveInstrumentMapping already normalizes case, so this
+// also proves the seeded mapping resolves regardless of delivered casing).
+// This is what the curl fixtures in apps/api exercise locally.
+// ---------------------------------------------------------------------------
+const TV_MAPPING_EXCHANGE = "CME";
+const TV_MAPPING_SYMBOL = "NQ1!";
+
+async function seedTradingViewInstrumentMapping(instrumentId: string): Promise<void> {
+  const existing = await tradingViewInstrumentMappingsRepository.resolveInstrumentMapping(
+    TV_MAPPING_EXCHANGE,
+    TV_MAPPING_SYMBOL,
+  );
+  if (existing) {
+    console.log(
+      `  TradingView instrument mapping ${TV_MAPPING_EXCHANGE}:${TV_MAPPING_SYMBOL} already exists (-> ${existing.id})`,
+    );
+    return;
+  }
+
+  const mapping = await tradingViewInstrumentMappingsRepository.createTradingViewInstrumentMapping({
+    exchange: TV_MAPPING_EXCHANGE,
+    symbol: TV_MAPPING_SYMBOL,
+    instrumentId,
+  });
+  console.log(
+    `  created TradingView instrument mapping ${mapping.exchange}:${mapping.symbol} -> ${instrumentId}`,
+  );
+}
+
 async function main(): Promise<void> {
   console.log("Seeding instruments...");
   const instrumentIds: Record<AssetClass, string> = { FUTURES: "", FOREX: "", CRYPTO: "", STOCK: "" };
@@ -400,6 +433,9 @@ async function main(): Promise<void> {
 
   console.log("Seeding Milestone 2 demo journal lifecycle...");
   await seedDemoJournalLifecycle(instrumentIds.FUTURES, strategyId, strategyVersionId);
+
+  console.log("Seeding Milestone 3 demo TradingView instrument mapping...");
+  await seedTradingViewInstrumentMapping(instrumentIds.FUTURES);
 
   console.log("Seed complete.");
 }

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "source": "TRADINGVIEW",
+  "strategyKey": "ema-trend-pullback",
+  "strategyVersion": "1.0.0",
+  "exchange": "NYMEX",
+  "symbol": "CL1!",
+  "timeframe": "5",
+  "signal": "SETUP_CANDIDATE",
+  "direction": "LONG",
+  "barTime": "2026-09-18T03:00:00.000Z",
+  "firedAt": "2026-09-18T03:00:01.000Z",
+  "open": "78.25",
+  "high": "78.60",
+  "low": "78.10",
+  "close": "78.45",
+  "volume": "5210",
+  "metadata": {}
+}

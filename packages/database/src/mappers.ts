@@ -5,6 +5,7 @@ import type {
   BacktestMetrics,
   BacktestTrade,
   Candle,
+  InboundWebhookEvent,
   Instrument,
   JournalEvent,
   JournalTrade,
@@ -15,6 +16,7 @@ import type {
   Strategy,
   StrategyVersion,
   TradeScreenshot,
+  TradingViewInstrumentMapping,
 } from "@trading-copilot/trading-domain";
 import type {
   AssetClass,
@@ -33,6 +35,8 @@ import type {
   Timeframe,
   TradeExitReason,
   TradeSource,
+  WebhookProcessingStatus,
+  WebhookProvider,
 } from "@trading-copilot/shared-types";
 
 /**
@@ -674,6 +678,66 @@ export function mapTradeScreenshot(row: PrismaTradeScreenshotRow): TradeScreensh
     height: row.height,
     marketSnapshotId: row.marketSnapshotId,
     chartConfigVersion: row.chartConfigVersion,
+    createdAt: row.createdAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 3: InboundWebhookEvent / TradingViewInstrumentMapping
+// ---------------------------------------------------------------------------
+
+export interface PrismaInboundWebhookEventRow {
+  id: string;
+  provider: WebhookProvider;
+  receivedAt: Date;
+  schemaVersion: number;
+  rawPayload: unknown;
+  normalizedPayload: unknown;
+  fingerprint: string;
+  processingStatus: WebhookProcessingStatus;
+  processingStartedAt: Date | null;
+  processingCompletedAt: Date | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  setupId: string | null;
+  createdAt: Date;
+}
+
+export function mapInboundWebhookEvent(row: PrismaInboundWebhookEventRow): InboundWebhookEvent {
+  return {
+    id: row.id,
+    provider: row.provider,
+    receivedAt: row.receivedAt,
+    schemaVersion: row.schemaVersion,
+    rawPayload: toRecord(row.rawPayload),
+    normalizedPayload: row.normalizedPayload === null ? null : toRecord(row.normalizedPayload),
+    fingerprint: row.fingerprint,
+    processingStatus: row.processingStatus,
+    processingStartedAt: row.processingStartedAt,
+    processingCompletedAt: row.processingCompletedAt,
+    failureCode: row.failureCode,
+    failureMessage: row.failureMessage,
+    setupId: row.setupId,
+    createdAt: row.createdAt,
+  };
+}
+
+export interface PrismaTradingViewInstrumentMappingRow {
+  id: string;
+  exchange: string;
+  symbol: string;
+  instrumentId: string;
+  createdAt: Date;
+}
+
+export function mapTradingViewInstrumentMapping(
+  row: PrismaTradingViewInstrumentMappingRow,
+): TradingViewInstrumentMapping {
+  return {
+    id: row.id,
+    exchange: row.exchange,
+    symbol: row.symbol,
+    instrumentId: row.instrumentId,
     createdAt: row.createdAt,
   };
 }

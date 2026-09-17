@@ -8,19 +8,19 @@ Historical CSV → validated candles → PostgreSQL → instrument → strategy 
 
 No runtime AI agents. No TradingView. No brokerage connectivity. No automatic execution.
 
-## Milestone 2 — Trade journal foundation + deeper analytics (complete, current)
+## Milestone 2 — Trade journal foundation + deeper analytics (complete)
 
 Market snapshots, the Setup lifecycle (WATCH/PREPARE/READY/REJECTED/INVALIDATED/EXPIRED), persisted risk calculations, journal trades (paper/manual-live/skipped, distinct from Milestone 1's BacktestTrade), an append-only journal event log with full timeline reconstruction, a deterministic cross-cutting analytics engine (grouping + winner/loser comparison) spanning both backtested and real trades, and dashboard pages for all of it (`/journal`, `/trades`, `/analytics`). See `docs/trade-journal-design.md`.
 
 Rejected/skipped setups remain fully queryable, never deleted. `PostTradeAnalysis` and `TradeScreenshot` exist as schema foundations only — nothing auto-populates them yet.
 
-## Milestone 3 — TradingView webhook ingestion
+## Milestone 3 — TradingView webhook ingestion + live setup state machine (complete, current)
 
-`POST /webhooks/tradingview`, signed/validated payloads, duplicate-event protection, Setup creation.
+`POST /webhooks/tradingview`: durable, idempotent (database-unique-constraint-backed), asynchronous ingestion via BullMQ, validated/versioned payloads, explicit instrument/strategy resolution (never auto-created, never "latest"), realtime dashboard updates over WebSocket (Redis pub/sub between `apps/worker` and `apps/api`), and a `/live-setups` dashboard. See `docs/tradingview-setup.md` and `docs/tradingview-security.md`.
 
-## Milestone 4 — Live setup state machine
+The WATCH → PREPARE → READY → INVALIDATED / EXPIRED / REJECTED state machine itself shipped in Milestone 2 and is reused unchanged here — this milestone is what actually drives it from a live, external signal source instead of only backtests/manual test data. Human executes only after receiving information; no automatic execution exists anywhere in this codebase.
 
-WATCH → PREPARE → READY → INVALIDATED / EXPIRED / REJECTED. Human executes only after receiving information.
+*(There is no separate "Milestone 4" — its original scope, the live setup state machine, is covered above; later milestone numbers are kept as originally planned rather than renumbered, to avoid a drive-by rename across every doc that cites a milestone number.)*
 
 ## Milestone 5 — Chart screenshot generation
 

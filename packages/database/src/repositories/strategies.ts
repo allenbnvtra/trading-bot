@@ -41,6 +41,37 @@ export async function getStrategyVersion(id: string): Promise<StrategyVersion | 
   return row ? mapStrategyVersion(row) : null;
 }
 
+export interface StrategyVersionLookup {
+  strategy: Strategy;
+  strategyVersion: StrategyVersion;
+}
+
+/**
+ * Milestone 3: resolves a webhook's `strategyKey`/`strategyVersion` strings
+ * against real records in one efficient query, rather than the caller doing
+ * listStrategies() + a linear scan. Returns null if the strategy key itself
+ * doesn't resolve, or if it resolves but has no version matching `version`.
+ */
+export async function findStrategyVersionByKeyAndVersion(
+  strategyKey: string,
+  version: string,
+): Promise<StrategyVersionLookup | null> {
+  const row = await prisma.strategy.findUnique({
+    where: { key: strategyKey },
+    include: { versions: { where: { version } } },
+  });
+  if (!row) return null;
+
+  const { versions, ...strategyRow } = row;
+  const versionRow = versions[0];
+  if (!versionRow) return null;
+
+  return {
+    strategy: mapStrategy(strategyRow),
+    strategyVersion: mapStrategyVersion(versionRow),
+  };
+}
+
 /**
  * StrategyVersion rows are immutable once created (see CLAUDE.md and
  * .claude/agents/data-engineer.md). This module deliberately exposes no

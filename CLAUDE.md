@@ -12,9 +12,11 @@ Humans execute trades manually.
 
 Milestone 1 (complete): historical candles → deterministic strategies → deterministic backtesting → persisted trades → performance analytics → dashboard inspection.
 
-Milestone 2 (current): trade journal + analytics foundation — market snapshots, setups, risk-calculation persistence, journal trades, append-only journal events, deterministic cross-cutting analytics. See `docs/trade-journal-design.md`.
+Milestone 2 (complete): trade journal + analytics foundation — market snapshots, setups, risk-calculation persistence, journal trades, append-only journal events, deterministic cross-cutting analytics. See `docs/trade-journal-design.md`.
 
-Do not skip directly to runtime AI agents, TradingView, or broker execution.
+Milestone 3 (current): TradingView webhook ingestion — durable, idempotent, asynchronous ingestion of TradingView alerts into the existing Setup/journal architecture, with realtime dashboard updates. See `docs/tradingview-setup.md` and `docs/tradingview-security.md`.
+
+Do not skip directly to runtime AI agents or broker execution.
 
 See `docs/implementation-status.md` for current progress and `docs/roadmap.md` for future milestones.
 

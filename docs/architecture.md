@@ -4,8 +4,8 @@ Trading Copilot is a modular monolith, not a microservices system. It is a perso
 
 ## Applications
 
-- **apps/api** — NestJS HTTP API. Thin controllers, DTO validation, delegates all financial/strategy logic to domain packages. Owns writes/reads against PostgreSQL via `packages/database`, and enqueues background work via BullMQ/Redis.
-- **apps/worker** — BullMQ job processor (backtest execution, future market-data import jobs). Calls the same domain packages as the API — never reimplements backtesting or risk math.
+- **apps/api** — NestJS HTTP API. Thin controllers, DTO validation, delegates all financial/strategy logic to domain packages. Owns writes/reads against PostgreSQL via `packages/database`, and enqueues background work via BullMQ/Redis. Also hosts `POST /webhooks/tradingview` (Milestone 3 — see `docs/tradingview-setup.md`) and a WebSocket gateway that rebroadcasts realtime events published by `apps/worker` over Redis pub/sub.
+- **apps/worker** — BullMQ job processor: backtest execution (Milestone 1) and TradingView webhook event processing (Milestone 3 — normalize, resolve instrument/strategy, create `Setup`, journal). Calls the same domain packages as the API — never reimplements backtesting, risk, or normalization math. Publishes realtime notifications to Redis for `apps/api`'s WebSocket gateway to forward; PostgreSQL remains the source of truth regardless — a reconnecting dashboard client reloads current state from the REST API rather than depending on having seen every pub/sub message.
 - **apps/dashboard** — Next.js App Router research UI. Renders values computed by the backend; never recomputes financial values client-side.
 
 ## Packages
@@ -16,7 +16,7 @@ Trading Copilot is a modular monolith, not a microservices system. It is a perso
 - **packages/risk-engine** — Deterministic position-sizing, risk/reward, and trade P&L math (`calculateGrossPnl`/`calculateNetPnl`/`calculateRMultiple`). Pure functions, `decimal.js` throughout, rejects invalid input rather than coercing it.
 - **packages/backtester** — Deterministic backtesting engine composing strategy-engine + risk-engine over a candle series to produce trades and metrics. No database — the caller (apps/worker) persists the result.
 - **packages/analytics** — Deterministic, LLM-free grouping and winner/loser-comparison math over `NormalizedTrade[]` (Milestone 1 `BacktestTrade` and Milestone 2 `JournalTrade`, normalized to one shape by packages/database). No database dependency — mirrors packages/backtester's relationship to raw candle data.
-- **packages/database** — Prisma schema/client, migrations, seed data, the candle CSV importer, the Milestone 1 backtest repositories, the Milestone 2 journal repositories (MarketSnapshot/Setup/RiskCalculation/JournalTrade/JournalEvent/PostTradeAnalysis/TradeScreenshot), and the `getNormalizedTrades()` backtest↔journal analytics adapter.
+- **packages/database** — Prisma schema/client, migrations, seed data, the candle CSV importer, the Milestone 1 backtest repositories, the Milestone 2 journal repositories (MarketSnapshot/Setup/RiskCalculation/JournalTrade/JournalEvent/PostTradeAnalysis/TradeScreenshot), the Milestone 3 webhook-ingestion repositories (InboundWebhookEvent/TradingViewInstrumentMapping), and the `getNormalizedTrades()` backtest↔journal analytics adapter.
 
 ## Dependency direction
 
@@ -34,7 +34,7 @@ Packages never depend on apps. `strategy-engine`, `risk-engine`, `backtester`, a
 
 ## Source of truth
 
-PostgreSQL is the only persistent source of truth. Redis is ephemeral queue/cache infrastructure (BullMQ job state) — nothing that must survive a `FLUSHALL` lives only in Redis. Nothing depends on LLM memory for historical facts; runtime AI agents (future milestones) query PostgreSQL through the domain packages.
+PostgreSQL is the only persistent source of truth. Redis is ephemeral queue/cache/pub-sub infrastructure (BullMQ job state, plus the Milestone 3 realtime notification channel — `packages/shared-types`' `REALTIME_CHANNEL`) — nothing that must survive a `FLUSHALL` lives only in Redis. A dropped or missed pub/sub message is never a correctness problem: the dashboard's `/live-setups` page reloads from the REST API on reconnect rather than trusting it saw every message. Nothing depends on LLM memory for historical facts; runtime AI agents (future milestones) query PostgreSQL through the domain packages.
 
 ## Where financial logic is allowed to live
 
@@ -52,3 +52,4 @@ Only in `packages/risk-engine`, `packages/strategy-engine`, `packages/backtester
 - Every `BacktestTrade` links back to the `StrategyVersion` and `Instrument` that produced it, and every `Backtest` records the assumptions (commission, slippage, risk %) it ran with, so a result can be explained and reproduced later.
 - `MarketSnapshot` and `RiskCalculation` rows are immutable once created (no update path exists in `packages/database`); a `Setup` needing fresher context or a recalculation gets a *new* row, never a mutated one.
 - Every `Setup`/`RiskCalculation`/`JournalTrade` lifecycle change emits a matching `JournalEvent` in the same database transaction — the event and the change it describes can never disagree. All events for one `Setup`'s lifecycle (including its `JournalTrade`'s) share `correlationId = setup.id`, making timeline reconstruction a single indexed query. See `docs/trade-journal-design.md`.
+- A duplicate `InboundWebhookEvent` delivery cannot create a duplicate `Setup`: `fingerprint` carries a database `@unique` constraint, so idempotency is enforced by the database itself, not by an application-level check-then-insert (which would race under concurrent delivery). See `docs/tradingview-setup.md`.

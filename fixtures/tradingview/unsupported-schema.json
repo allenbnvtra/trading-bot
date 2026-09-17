@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 2,
+  "source": "TRADINGVIEW",
+  "strategyKey": "ema-trend-pullback",
+  "strategyVersion": "1.0.0",
+  "exchange": "CME",
+  "symbol": "NQ1!",
+  "note": "This is a hypothetical future payload shape (schemaVersion 2) used only to test that an unrecognized schema version is stored and marked UNSUPPORTED rather than crashing the server.",
+  "signal": "SETUP_CANDIDATE",
+  "direction": "LONG",
+  "barTime": "2026-09-18T03:45:00.000Z"
+}
