@@ -8,8 +8,10 @@ import { InstrumentModule } from "./instruments/instrument.module";
 import { JournalModule } from "./journal/journal.module";
 import { MarketDataModule } from "./market-data/market-data.module";
 import { MarketSnapshotModule } from "./market-snapshots/market-snapshot.module";
+import { RealtimeModule } from "./realtime/realtime.module";
 import { SetupModule } from "./setups/setup.module";
 import { StrategyModule } from "./strategies/strategy.module";
+import { TradingViewWebhookModule } from "./webhooks/tradingview-webhook.module";
 
 @Module({
   imports: [
@@ -25,6 +27,8 @@ import { StrategyModule } from "./strategies/strategy.module";
     SetupModule,
     JournalModule,
     AnalyticsModule,
+    TradingViewWebhookModule,
+    RealtimeModule,
   ],
 })
 export class AppModule {}

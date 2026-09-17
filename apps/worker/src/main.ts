@@ -15,7 +15,9 @@ async function bootstrap(): Promise<void> {
   const logger = new Logger("Worker");
   await NestFactory.createApplicationContext(AppModule);
   const concurrency = process.env.WORKER_CONCURRENCY ?? "2";
-  logger.log(`Trading Copilot worker started (concurrency=${concurrency}), consuming queue "backtest-run"`);
+  logger.log(
+    `Trading Copilot worker started (concurrency=${concurrency}), consuming queues "backtest-run", "tradingview-webhook-event", "setup-expiration"`,
+  );
 }
 
 bootstrap();

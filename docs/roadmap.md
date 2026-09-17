@@ -18,9 +18,9 @@ Rejected/skipped setups remain fully queryable, never deleted. `PostTradeAnalysi
 
 `POST /webhooks/tradingview`: durable, idempotent (database-unique-constraint-backed), asynchronous ingestion via BullMQ, validated/versioned payloads, explicit instrument/strategy resolution (never auto-created, never "latest"), realtime dashboard updates over WebSocket (Redis pub/sub between `apps/worker` and `apps/api`), and a `/live-setups` dashboard. See `docs/tradingview-setup.md` and `docs/tradingview-security.md`.
 
-The WATCH → PREPARE → READY → INVALIDATED / EXPIRED / REJECTED state machine itself shipped in Milestone 2 and is reused unchanged here — this milestone is what actually drives it from a live, external signal source instead of only backtests/manual test data. Human executes only after receiving information; no automatic execution exists anywhere in this codebase.
+The WATCH → PREPARE → READY → INVALIDATED / EXPIRED / REJECTED state machine itself shipped in Milestone 2 and is reused unchanged here; this milestone is what actually drives it from a live, external signal source instead of only backtests/manual test data. Human executes only after receiving information; no automatic execution exists anywhere in this codebase.
 
-*(There is no separate "Milestone 4" — its original scope, the live setup state machine, is covered above; later milestone numbers are kept as originally planned rather than renumbered, to avoid a drive-by rename across every doc that cites a milestone number.)*
+*(There is no separate "Milestone 4": its original scope, the live setup state machine, is covered above; later milestone numbers are kept as originally planned rather than renumbered, to avoid a drive-by rename across every doc that cites a milestone number.)*
 
 ## Milestone 5 — Chart screenshot generation
 

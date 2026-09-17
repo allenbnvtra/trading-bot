@@ -5,3 +5,4 @@ export * from "./backtest-request";
 export * from "./journal";
 export * from "./tradingview";
 export * from "./realtime";
+export * from "./setup-expiration";

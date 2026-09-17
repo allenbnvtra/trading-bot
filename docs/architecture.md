@@ -4,8 +4,8 @@ Trading Copilot is a modular monolith, not a microservices system. It is a perso
 
 ## Applications
 
-- **apps/api** — NestJS HTTP API. Thin controllers, DTO validation, delegates all financial/strategy logic to domain packages. Owns writes/reads against PostgreSQL via `packages/database`, and enqueues background work via BullMQ/Redis. Also hosts `POST /webhooks/tradingview` (Milestone 3 — see `docs/tradingview-setup.md`) and a WebSocket gateway that rebroadcasts realtime events published by `apps/worker` over Redis pub/sub.
-- **apps/worker** — BullMQ job processor: backtest execution (Milestone 1) and TradingView webhook event processing (Milestone 3 — normalize, resolve instrument/strategy, create `Setup`, journal). Calls the same domain packages as the API — never reimplements backtesting, risk, or normalization math. Publishes realtime notifications to Redis for `apps/api`'s WebSocket gateway to forward; PostgreSQL remains the source of truth regardless — a reconnecting dashboard client reloads current state from the REST API rather than depending on having seen every pub/sub message.
+- **apps/api** — NestJS HTTP API. Thin controllers, DTO validation, delegates all financial/strategy logic to domain packages. Owns writes/reads against PostgreSQL via `packages/database`, and enqueues background work via BullMQ/Redis. Also hosts `POST /webhooks/tradingview` (Milestone 3; see `docs/tradingview-setup.md`) and a WebSocket gateway that rebroadcasts realtime events published by `apps/worker` over Redis pub/sub.
+- **apps/worker** — BullMQ job processor: backtest execution (Milestone 1) and TradingView webhook event processing (Milestone 3: normalize, resolve instrument/strategy, create `Setup`, journal). Calls the same domain packages as the API and never reimplements backtesting, risk, or normalization math. Publishes realtime notifications to Redis for `apps/api`'s WebSocket gateway to forward; PostgreSQL remains the source of truth regardless, so a reconnecting dashboard client reloads current state from the REST API rather than depending on having seen every pub/sub message.
 - **apps/dashboard** — Next.js App Router research UI. Renders values computed by the backend; never recomputes financial values client-side.
 
 ## Packages
@@ -34,7 +34,7 @@ Packages never depend on apps. `strategy-engine`, `risk-engine`, `backtester`, a
 
 ## Source of truth
 
-PostgreSQL is the only persistent source of truth. Redis is ephemeral queue/cache/pub-sub infrastructure (BullMQ job state, plus the Milestone 3 realtime notification channel — `packages/shared-types`' `REALTIME_CHANNEL`) — nothing that must survive a `FLUSHALL` lives only in Redis. A dropped or missed pub/sub message is never a correctness problem: the dashboard's `/live-setups` page reloads from the REST API on reconnect rather than trusting it saw every message. Nothing depends on LLM memory for historical facts; runtime AI agents (future milestones) query PostgreSQL through the domain packages.
+PostgreSQL is the only persistent source of truth. Redis is ephemeral queue/cache/pub-sub infrastructure (BullMQ job state, plus the Milestone 3 realtime notification channel: `packages/shared-types`' `REALTIME_CHANNEL`); nothing that must survive a `FLUSHALL` lives only in Redis. A dropped or missed pub/sub message is never a correctness problem: the dashboard's `/live-setups` page reloads from the REST API on reconnect rather than trusting it saw every message. Nothing depends on LLM memory for historical facts; runtime AI agents (future milestones) query PostgreSQL through the domain packages.
 
 ## Where financial logic is allowed to live
 

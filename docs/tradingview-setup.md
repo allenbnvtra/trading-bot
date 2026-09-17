@@ -23,7 +23,7 @@ InboundWebhookEvent row (status PROCESSED, setupId set)
 WebSocket → Next.js dashboard (/live-setups)
 ```
 
-The HTTP handler does the minimum possible work before responding: parse, validate the envelope, compute the fingerprint, durably persist the raw event, enqueue the job. Everything else (normalization, instrument/strategy resolution, `Setup` creation, journaling) happens in the BullMQ worker — never AI analysis, screenshot rendering, backtests, or large scans in the request path.
+The HTTP handler does the minimum possible work before responding: parse, validate the envelope, compute the fingerprint, durably persist the raw event, enqueue the job. Everything else (normalization, instrument/strategy resolution, `Setup` creation, journaling) happens in the BullMQ worker. There is never AI analysis, screenshot rendering, backtests, or large scans in the request path.
 
 ## Payload format (schemaVersion 1)
 
@@ -51,35 +51,37 @@ The HTTP handler does the minimum possible work before responding: parse, valida
 
 Full schema: `packages/shared-types/src/tradingview.ts` (`tradingViewWebhookV1Schema`). Notes:
 
-- Every price/volume field is a **decimal string**, never a bare number — this project never trusts a wire-format float for anything financial (see `CLAUDE.md`). They're parsed into `Decimal` only once resolved.
-- `timeframe` is TradingView's own compact interval code (`"1"`, `"5"`, `"15"`, `"60"`, `"240"`, `"D"`), not this project's internal `Timeframe` string — the worker maps it (`packages/shared-types/src/tradingview.ts`'s `TRADINGVIEW_TIMEFRAME_MAP`). An interval with no mapping is rejected (`UNSUPPORTED_TIMEFRAME`), never guessed.
+- Every price/volume field is a **decimal string**, never a bare number. This project never trusts a wire-format float for anything financial (see `CLAUDE.md`). They're parsed into `Decimal` only once resolved.
+- `timeframe` is TradingView's own compact interval code (`"1"`, `"5"`, `"15"`, `"60"`, `"240"`, `"D"`), not this project's internal `Timeframe` string. The worker maps it (`packages/shared-types/src/tradingview.ts`'s `TRADINGVIEW_TIMEFRAME_MAP`). An interval with no mapping is rejected (`UNSUPPORTED_TIMEFRAME`), never guessed.
 - `signal` is currently only ever `"SETUP_CANDIDATE"`. Any other value is rejected (`UNSUPPORTED_SIGNAL_TYPE`) rather than silently ignored or guessed at.
-- `strategyKey`/`strategyVersion` must exactly match an existing `Strategy`/`StrategyVersion` in the database. There is no "fall back to latest version" behavior, ever — an unmatched pair is rejected (`UNKNOWN_STRATEGY_VERSION`).
-- `exchange`/`symbol` must resolve through an explicit `TradingViewInstrumentMapping` row. An instrument is never auto-created from webhook data — an unmapped symbol is rejected (`UNKNOWN_INSTRUMENT`).
+- `strategyKey`/`strategyVersion` must exactly match an existing `Strategy`/`StrategyVersion` in the database. There is no "fall back to latest version" behavior, ever. An unmatched pair is rejected (`UNKNOWN_STRATEGY_VERSION`).
+- `exchange`/`symbol` must resolve through an explicit `TradingViewInstrumentMapping` row. An instrument is never auto-created from webhook data. An unmapped symbol is rejected (`UNKNOWN_INSTRUMENT`).
 
 ### schemaVersion and forward compatibility
 
-`schemaVersion` is required on every payload. Only `1` is understood today. A payload with any other `schemaVersion` is still durably stored (so nothing is silently lost) and marked `UNSUPPORTED` — it never crashes the worker or the HTTP request. This lets a future `schemaVersion: 2` payload format coexist safely once it exists, without breaking older alerts still in flight.
+`schemaVersion` is required on every payload. Only `1` is understood today. A payload with any other `schemaVersion` is still durably stored (so nothing is silently lost) and marked `UNSUPPORTED`. It never crashes the worker or the HTTP request. This lets a future `schemaVersion: 2` payload format coexist safely once it exists, without breaking older alerts still in flight.
 
 ## Idempotency
 
 A duplicate physical delivery of the same underlying TradingView trigger must never create a second `Setup`. This is enforced with a real database constraint, not a "check, then insert" pattern (which races under concurrent delivery):
 
-1. A deterministic SHA-256 fingerprint is computed over `provider, strategyKey, strategyVersion, exchange, symbol, timeframe, signal, direction, barTime` (canonicalized: trimmed and lowercased). Deliberately **excluded**: `firedAt` (wall-clock delivery time — a genuine retry of the same trigger can have a different `firedAt`) and the OHLCV fields (redundant for a true duplicate, and excluding them avoids fragility to harmless formatting differences between deliveries).
+1. A deterministic SHA-256 fingerprint is computed over `provider, strategyKey, strategyVersion, exchange, symbol, timeframe, signal, direction, barTime` (canonicalized: trimmed and lowercased). Deliberately **excluded**: `firedAt` (wall-clock delivery time: a genuine retry of the same trigger can have a different `firedAt`) and the OHLCV fields (redundant for a true duplicate, and excluding them avoids fragility to harmless formatting differences between deliveries).
 2. `InboundWebhookEvent.fingerprint` has a database `@unique` constraint.
-3. Inserting a second event with the same fingerprint fails at the database level; the handler catches that failure, looks up the original event, and records a `WEBHOOK_DUPLICATE_DETECTED` journal event against it — no second row, no second `Setup`.
+3. Inserting a second event with the same fingerprint fails at the database level; the handler catches that failure, looks up the original event, and records a `WEBHOOK_DUPLICATE_DETECTED` journal event against it. No second row, no second `Setup`.
 
-This is safe even when two identical deliveries arrive genuinely concurrently (not just sequentially) — see `packages/database/src/journal.integration.test.ts`'s concurrency test.
+This is safe even when two identical deliveries arrive genuinely concurrently (not just sequentially): see `packages/database/src/webhook-ingestion.integration.test.ts`'s concurrency test.
 
 ## Journal timeline
 
-Every step is journaled via the existing `JournalEvent` architecture (see `docs/trade-journal-design.md`) — there is no separate/competing audit system. Events before a `Setup` exists are correlated on the `InboundWebhookEvent`'s own id; once a `Setup` is created, its own events (`SETUP_CREATED` onward) are correlated on the `Setup`'s id, per the existing Milestone 2 convention. `getFullTradingViewTimeline` merges both groups (via `InboundWebhookEvent.setupId`) into one chronological reconstruction:
+Every step is journaled via the existing `JournalEvent` architecture (see `docs/trade-journal-design.md`); there is no separate/competing audit system. Events before a `Setup` exists are correlated on the `InboundWebhookEvent`'s own id; once a `Setup` is created, its own events (`SETUP_CREATED` onward) are correlated on the `Setup`'s id, per the existing Milestone 2 convention. `getFullTradingViewTimeline` merges both groups (via `InboundWebhookEvent.setupId`) into one chronological reconstruction:
 
 ```
-WEBHOOK_RECEIVED → WEBHOOK_NORMALIZED → SIGNAL_ACCEPTED → SETUP_CREATED → SETUP_APPROVED → ...
+WEBHOOK_RECEIVED → WEBHOOK_NORMALIZED → SETUP_CREATED → SIGNAL_ACCEPTED → SETUP_APPROVED → ...
 ```
 
-or, for a rejected delivery:
+`SIGNAL_ACCEPTED` necessarily comes after `SETUP_CREATED`, not before it: it records the resolved `instrumentId`/`strategyId`/`strategyVersionId` against the `Setup` that resolution just produced, so the `Setup` (and its own `SETUP_CREATED` event) must already exist by the time it's emitted.
+
+Or, for a rejected delivery:
 
 ```
 WEBHOOK_RECEIVED → WEBHOOK_REJECTED (failureCode: UNKNOWN_INSTRUMENT | UNKNOWN_STRATEGY_VERSION | ...)
@@ -87,7 +89,53 @@ WEBHOOK_RECEIVED → WEBHOOK_REJECTED (failureCode: UNKNOWN_INSTRUMENT | UNKNOWN
 
 ## Setup creation
 
-A valid signal creates a `Setup` with `source: "TRADINGVIEW"`, `status: "WATCH"`. `plannedEntry` is the alert bar's close price (a real observed value); `plannedStop`/`plannedTarget1` are left **unset** (`null`) — the alert doesn't carry them, and unknown information stays unknown rather than being fabricated. A `RiskCalculation` (and, with it, a real stop/target-informed position size) can be added later once that information is available — see `POST /setups/:id/risk-calculations` in `docs/trade-journal-design.md`. The state machine is unchanged from Milestone 2 (`WATCH → PREPARE → READY`, `REJECTED`/`INVALIDATED`/`EXPIRED` terminal from any non-terminal state).
+A valid signal creates a `Setup` with `source: "TRADINGVIEW"`, `status: "WATCH"`. `plannedEntry` is the alert bar's close price (a real observed value); `plannedStop`/`plannedTarget1` are left **unset** (`null`). The alert doesn't carry them, and unknown information stays unknown rather than being fabricated. A `RiskCalculation` (and, with it, a real stop/target-informed position size) can be added later once that information is available; see `POST /setups/:id/risk-calculations` in `docs/trade-journal-design.md`. The state machine is unchanged from Milestone 2 (`WATCH → PREPARE → READY`, `REJECTED`/`INVALIDATED`/`EXPIRED` terminal from any non-terminal state).
+
+## Setup expiration
+
+A TRADINGVIEW-sourced `Setup` is not watched forever. At creation time the worker sets
+`expiresAt = barTime + TRADINGVIEW_SETUP_EXPIRY_MINUTES` (env var, default `60`) and
+schedules a delayed BullMQ job (`setup-expiration` queue) for that instant. When the
+delay elapses, a dedicated processor re-checks the `Setup`:
+
+- If it is already terminal (`REJECTED`, `INVALIDATED`, or `EXPIRED`: a human, or
+  another process, already resolved it before the delay elapsed), the job is a no-op.
+  A terminal status is never overwritten, including by expiration.
+- Otherwise (including `READY`: an unactioned `READY` setup expires exactly like
+  `WATCH`/`PREPARE`, since a human didn't take the trade in time), it transitions to
+  `EXPIRED` via the same `transitionSetupStatus` state machine Milestone 2 uses, which
+  emits the existing `SETUP_EXPIRED` journal event.
+
+## Realtime notifications
+
+apps/worker publishes JSON events to a single Redis pub/sub channel
+(`REALTIME_CHANNEL`, `packages/shared-types/src/realtime.ts`) whenever it creates or
+expires a `Setup` (`setup.created`, `setup.expired`), and apps/api publishes
+`webhook.received` right when a **new** (non-duplicate) `InboundWebhookEvent` is
+created. apps/api's WebSocket gateway (`@nestjs/websockets` + socket.io) subscribes to
+that same channel and rebroadcasts every parsed event, unchanged, to connected
+dashboard clients as a `realtime-event` message. This is a presentation transport
+only; PostgreSQL remains the source of truth, and a dashboard client that reconnects
+(or never received a message) reloads current state from the REST API rather than
+depending on having seen every message (see `docs/architecture.md`).
+
+## Health
+
+`GET /health` (apps/api) reports a `tradingViewIngestion` field derived from the most
+recent `InboundWebhookEvent`: `UNKNOWN` if none has ever been received, `DEGRADED` if
+the most recent one ended `FAILED`, otherwise `ONLINE`. The endpoint's overall
+`status` is `"degraded"` whenever ingestion is `DEGRADED` (never silently `"ok"`),
+but a fresh `UNKNOWN` ingestion state (no alerts fired yet) does not by itself
+degrade the overall status.
+
+## Admin/inspection endpoints
+
+- `GET /webhooks/tradingview/events`: filterable list (`provider`, `processingStatus`,
+  `setupId`, `dateFrom`, `dateTo`), newest first.
+- `GET /webhooks/tradingview/events/:id`: a single `InboundWebhookEvent`, 404 if
+  unknown.
+- `GET /webhooks/tradingview/events/:id/timeline`: the combined webhook + Setup
+  journal reconstruction (`getFullTradingViewTimeline`).
 
 ## Local testing (no TradingView account needed)
 
@@ -107,26 +155,26 @@ See `fixtures/tradingview/README.md` for the full fixture list (`valid-long.json
 
 ## Manual test procedure
 
-1. `pnpm infra:up` — start Postgres + Redis.
-2. `pnpm dev` — start `apps/api`, `apps/worker`, `apps/dashboard`.
-3. `pnpm db:migrate && pnpm db:seed` — the seed creates the `ema-trend-pullback` v1.0.0 strategy, the `GENFUT1` instrument, and a `CME`/`NQ1!` → `GENFUT1` `TradingViewInstrumentMapping`.
-4. `curl -i -X POST http://localhost:3001/webhooks/tradingview --data @fixtures/tradingview/valid-long.json` — verify the HTTP response (fast, `202`-style acknowledgement with the `InboundWebhookEvent` id).
-5. `curl http://localhost:3001/webhooks/tradingview/events/<id>` — verify the inbound event was stored (`RECEIVED` or later).
-6. Wait briefly for the worker to pick up the job, then re-check — verify `processingStatus` reaches `PROCESSED`.
-7. `curl http://localhost:3001/setups?source=TRADINGVIEW` — verify exactly one `Setup` was created.
-8. `curl http://localhost:3001/setups/<id>/timeline` (or the combined webhook+setup timeline endpoint) — verify the full journal.
-9. Open `http://localhost:3000/live-setups` — verify the setup appears live in the dashboard.
-10. Re-POST the **same** fixture (or `duplicate.json`) — verify the HTTP response indicates a duplicate and `GET /setups?source=TRADINGVIEW` still shows exactly **one** setup.
-11. `curl -X POST ... --data @fixtures/tradingview/malformed.json` — verify a fast, clear `400` rejection.
-12. `curl -X POST ... --data @fixtures/tradingview/unknown-instrument.json` — verify the event is stored and `REJECTED` with `failureCode: UNKNOWN_INSTRUMENT`, and no `Setup` is created.
+1. `pnpm infra:up`: start Postgres + Redis.
+2. `pnpm dev`: start `apps/api`, `apps/worker`, `apps/dashboard`.
+3. `pnpm db:migrate && pnpm db:seed`: the seed creates the `ema-trend-pullback` v1.0.0 strategy, the `GENFUT1` instrument, and a `CME`/`NQ1!` → `GENFUT1` `TradingViewInstrumentMapping`.
+4. `curl -i -X POST http://localhost:3001/webhooks/tradingview --data @fixtures/tradingview/valid-long.json`: verify the HTTP response (fast, `202`-style acknowledgement with the `InboundWebhookEvent` id).
+5. `curl http://localhost:3001/webhooks/tradingview/events/<id>`: verify the inbound event was stored (`RECEIVED` or later).
+6. Wait briefly for the worker to pick up the job, then re-check: verify `processingStatus` reaches `PROCESSED`.
+7. `curl http://localhost:3001/setups?source=TRADINGVIEW`: verify exactly one `Setup` was created.
+8. `curl http://localhost:3001/setups/<id>/timeline` (or the combined webhook+setup timeline endpoint): verify the full journal.
+9. Open `http://localhost:3000/live-setups`: verify the setup appears live in the dashboard.
+10. Re-POST the **same** fixture (or `duplicate.json`): verify the HTTP response indicates a duplicate and `GET /setups?source=TRADINGVIEW` still shows exactly **one** setup.
+11. `curl -X POST ... --data @fixtures/tradingview/malformed.json`: verify a fast, clear `400` rejection.
+12. `curl -X POST ... --data @fixtures/tradingview/unknown-instrument.json`: verify the event is stored and `REJECTED` with `failureCode: UNKNOWN_INSTRUMENT`, and no `Setup` is created.
 
 ## Configuring a real TradingView alert
 
-1. Add `examples/tradingview/ema-trend-pullback-webhook.pine` as an indicator on a chart (development/testing only — see the file's own header: this is an integration-test fixture, not a recommended strategy, and is not optimized).
-2. Create an alert on the "LONG" condition, "Once Per Bar Close", with the webhook URL pointing at your deployed `POST /webhooks/tradingview` endpoint (must be publicly reachable over HTTPS — TradingView cannot reach `localhost`; see `docs/tradingview-security.md` for reverse-proxy/TLS guidance).
+1. Add `examples/tradingview/ema-trend-pullback-webhook.pine` as an indicator on a chart (development/testing only; see the file's own header: this is an integration-test fixture, not a recommended strategy, and is not optimized).
+2. Create an alert on the "LONG" condition, "Once Per Bar Close", with the webhook URL pointing at your deployed `POST /webhooks/tradingview` endpoint (must be publicly reachable over HTTPS since TradingView cannot reach `localhost`; see `docs/tradingview-security.md` for reverse-proxy/TLS guidance).
 3. Repeat for the "SHORT" condition.
-4. The alert message is a static JSON template with TradingView placeholders substituted at fire time (`{{exchange}}`, `{{ticker}}`, `{{interval}}`, `{{time}}`, `{{timenow}}`, `{{open}}`, `{{high}}`, `{{low}}`, `{{close}}`, `{{volume}}` — all standard, currently-supported placeholders; nothing invented). LONG and SHORT need separate alert conditions/messages since a single alert can't conditionally emit a different `direction` value.
+4. The alert message is a static JSON template with TradingView placeholders substituted at fire time (`{{exchange}}`, `{{ticker}}`, `{{interval}}`, `{{time}}`, `{{timenow}}`, `{{open}}`, `{{high}}`, `{{low}}`, `{{close}}`, `{{volume}}`, all standard, currently-supported placeholders; nothing invented). LONG and SHORT need separate alert conditions/messages since a single alert can't conditionally emit a different `direction` value.
 
 ## Out-of-order delivery
 
-Each distinct signal (identified by its fingerprint, which includes `barTime`) creates its own independent `Setup` — this design never updates an existing `Setup` in place from a later webhook delivery. Consequently, out-of-order HTTP arrival is safe by construction: there is no shared mutable state that an older event could regress. If this ever changes (e.g. a future milestone lets a later signal amend an earlier `Setup`), that logic must compare domain timestamps (`barTime`), never assume HTTP arrival order reflects market-event order.
+Each distinct signal (identified by its fingerprint, which includes `barTime`) creates its own independent `Setup`; this design never updates an existing `Setup` in place from a later webhook delivery. Consequently, out-of-order HTTP arrival is safe by construction: there is no shared mutable state that an older event could regress. If this ever changes (e.g. a future milestone lets a later signal amend an earlier `Setup`), that logic must compare domain timestamps (`barTime`), never assume HTTP arrival order reflects market-event order.
