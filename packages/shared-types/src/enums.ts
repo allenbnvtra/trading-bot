@@ -217,12 +217,20 @@ export type WebhookProvider = (typeof WEBHOOK_PROVIDERS)[number];
 /**
  * InboundWebhookEvent lifecycle. RECEIVED -> QUEUED happens synchronously in
  * the HTTP handler (see docs/tradingview-setup.md); PROCESSING -> one of
- * PROCESSED/DUPLICATE/REJECTED/FAILED/UNSUPPORTED happens in the BullMQ
- * worker. DUPLICATE is set on the *original* event when a repeat delivery
- * is detected — a repeat delivery never gets its own row (the fingerprint's
- * database unique constraint prevents that), so DUPLICATE here means "this
- * event has been redelivered at least once," not "this event is itself a
- * duplicate row."
+ * PROCESSED/REJECTED/FAILED/UNSUPPORTED happens in the BullMQ worker.
+ *
+ * DUPLICATE is reserved, not currently set by any code path. A repeat
+ * delivery never gets its own row (the fingerprint's database unique
+ * constraint prevents that) and never mutates the *original* row's status
+ * either: overwriting an already-PROCESSED original back to DUPLICATE would
+ * incorrectly imply that a genuinely successful delivery was invalidated.
+ * "This event was redelivered" is instead conveyed two other ways: the
+ * `wasDuplicate: true` flag on createInboundWebhookEvent's return value (for
+ * the immediate HTTP caller), and a WEBHOOK_DUPLICATE_DETECTED journal event
+ * correlated to the original row (for the durable audit trail) - see
+ * packages/database/src/repositories/inbound-webhook-events.ts. Filtering
+ * `GET /webhooks/tradingview/events?processingStatus=DUPLICATE` will always
+ * return zero rows today.
  */
 export const WEBHOOK_PROCESSING_STATUSES = [
   "RECEIVED",
