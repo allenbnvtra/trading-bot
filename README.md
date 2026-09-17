@@ -11,12 +11,12 @@ See `CLAUDE.md` for the working rules this project is built under, `docs/roadmap
 Modular monolith. See `docs/architecture.md` for the full picture.
 
 ```
-apps/api         NestJS HTTP API
-apps/worker      BullMQ background job processor (runs backtests)
+apps/api         NestJS HTTP API (also hosts the TradingView webhook endpoint and a realtime WebSocket gateway)
+apps/worker      BullMQ background job processor (runs backtests, processes TradingView webhook events)
 apps/dashboard   Next.js research dashboard
 
-packages/database         Prisma schema, migrations, seed data, CSV importer, journal repositories
-packages/trading-domain   Domain entity types (Milestone 1 + 2, plus forward-declared future types)
+packages/database         Prisma schema, migrations, seed data, CSV importer, journal + webhook-ingestion repositories
+packages/trading-domain   Domain entity types (Milestone 1-3, plus forward-declared future types)
 packages/shared-types     Enums and Zod schemas shared everywhere
 packages/strategy-engine  Deterministic indicators + strategy definitions
 packages/risk-engine      Deterministic position sizing / risk / trade P&L math
@@ -138,10 +138,35 @@ curl http://localhost:3001/analytics/winners-losers                             
 
 All of the above draw from `packages/analytics`, running over a merged, normalized view of Milestone 1 backtest trades and Milestone 2 journal trades (`getNormalizedTrades()`) — never duplicated into a third table.
 
+## TradingView webhook ingestion (Milestone 3)
+
+A real TradingView alert becomes a live `Setup` in the trade journal, durably and idempotently, with no automatic order execution anywhere. Full design in `docs/tradingview-setup.md`, production hardening in `docs/tradingview-security.md`.
+
+TradingView cannot reach `localhost`, so local testing POSTs straight to the endpoint using the fixtures in `fixtures/tradingview/`:
+
+```bash
+curl -i -X POST http://localhost:3001/webhooks/tradingview \
+  -H "Content-Type: application/json" \
+  --data @fixtures/tradingview/valid-long.json
+```
+
+See `fixtures/tradingview/README.md` for the full fixture list (valid long/short, duplicate, unknown instrument, unknown strategy, malformed, unsupported schema) and exactly what each one should produce. Inspect what happened:
+
+```bash
+curl "http://localhost:3001/webhooks/tradingview/events?processingStatus=REJECTED"
+curl http://localhost:3001/webhooks/tradingview/events/<event-id>/timeline
+curl "http://localhost:3001/setups?source=TRADINGVIEW"
+```
+
+To configure a real alert, see `examples/tradingview/ema-trend-pullback-webhook.pine` (a development-only integration-test fixture, not a recommended strategy) and the "Configuring a real TradingView alert" section of `docs/tradingview-setup.md`.
+
 ## Dashboard
 
 Once `pnpm dev` is running: http://localhost:3000
 
+- `/live-setups` — live TradingView-sourced setups, updated in realtime over WebSocket, system health at the top
+- `/setups/<id>` — a single setup's full detail and journal timeline
+- `/webhook-events` — every inbound TradingView webhook delivery, including rejected ones, admin-inspectable
 - `/research` — run and inspect backtests
 - `/journal` — chronological journal event timeline, filterable
 - `/trades` — journal trades (paper/manual-live/skipped), each with its full decision timeline
@@ -152,5 +177,7 @@ Once `pnpm dev` is running: http://localhost:3000
 
 - `docs/backtesting-assumptions.md` — every conservative assumption baked into the backtester (entry timing, same-candle stop/target, slippage, commissions, gaps).
 - `docs/research-methodology.md` — the guardrails required before any future AI-driven strategy research is trusted.
-- `docs/trade-journal-design.md` — the trade journal / audit schema design (Milestone 2, implemented).
+- `docs/trade-journal-design.md` — the trade journal / audit schema design (Milestones 2-3, implemented).
+- `docs/tradingview-setup.md` — the TradingView webhook ingestion pipeline (Milestone 3, implemented).
+- `docs/tradingview-security.md` — production hardening for the webhook endpoint (Milestone 3).
 - `docs/screenshot-design.md` — the future chart-screenshot pipeline design (Milestone 5).
