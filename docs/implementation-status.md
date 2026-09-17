@@ -30,13 +30,11 @@ Living progress tracker. Update as work lands; do not let this drift from realit
 - `packages/database`: migration `20260917161439_add_journal_analytics_foundation` (7 new tables), repositories for every Milestone 2 model (Setup's transition matrix fully validated, journal events emitted atomically alongside every state change), `getNormalizedTrades()` backtest↔journal analytics adapter, one demo Setup lifecycle added to the seed script — verified end-to-end against live Postgres via a full integration test (setup → snapshot → risk calc → journal events → paper trade → close → timeline → normalized-trade analytics).
 - `packages/analytics` (new): `calculateTradeAnalytics`, `groupTradeAnalytics` (`DEFAULT_GROUP_BY` never silently merges strategy versions), `compareWinnersLosers` — zero database dependency, 22 tests.
 - `apps/api`: `MarketSnapshotModule`, `SetupModule`, `JournalModule`, `AnalyticsModule`; a global `DomainErrorFilter` translates repository errors to 404/409 — verified end-to-end against live Postgres/Redis with real numbers (105 normalized trades merging 104 Milestone 1 backtest trades + 1 new journal trade).
-## Milestone 2 — In progress
-
-- `apps/dashboard`: `/journal`, `/trades`, `/analytics` pages + nav update (backend is ready and live-verified; dashboard work in flight).
+- `apps/dashboard`: `/journal`, `/trades`, `/analytics` pages + nav update — verified against the live API (real 404 handling, real numbers matching the raw API response, a real demo trade's 7-event setup timeline rendered in order).
 
 ## Remaining
 
-- Final Milestone 2 review pass (system-architect, journal-analyst, research-methodologist, quality-reviewer) once the dashboard lands.
+- Final Milestone 2 review pass (system-architect, journal-analyst, research-methodologist, quality-reviewer).
 
 ## Known decisions
 
