@@ -53,6 +53,7 @@ function makeSetup(overrides: Partial<Setup> = {}): Setup {
     createdAt: new Date(),
     updatedAt: new Date(),
     expiresAt: null,
+    sourceWebhookEventId: null,
     ...overrides,
   };
 }

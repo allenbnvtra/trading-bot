@@ -96,6 +96,8 @@ export interface Setup {
   createdAt: Date;
   updatedAt: Date;
   expiresAt: Date | null;
+  /** Milestone 3: set only for a TRADINGVIEW-sourced Setup, to the InboundWebhookEvent that produced it. Unique in the database, so a retried webhook-processing job can never create a second Setup for the same delivery. */
+  sourceWebhookEventId: string | null;
 }
 
 /**

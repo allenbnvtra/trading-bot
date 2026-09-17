@@ -391,6 +391,7 @@ describe("mapSetup", () => {
       createdAt: new Date("2024-02-03T08:00:00.000Z"),
       updatedAt: new Date("2024-02-03T08:00:00.000Z"),
       expiresAt: null,
+      sourceWebhookEventId: null,
     };
 
     const setup = mapSetup(row);
@@ -398,6 +399,7 @@ describe("mapSetup", () => {
     expect(setup.plannedEntry.toString()).toBe("5100");
     expect(setup.plannedTarget2).toBeNull();
     expect(setup.status).toBe("WATCH");
+    expect(setup.sourceWebhookEventId).toBeNull();
   });
 });
 

@@ -1,6 +1,14 @@
 import { randomUUID } from "node:crypto";
+import Decimal from "decimal.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { inboundWebhookEventsRepository, prisma, setupsRepository } from "@trading-copilot/database";
+import {
+  inboundWebhookEventsRepository,
+  marketSnapshotsRepository,
+  prisma,
+  setupsRepository,
+  strategiesRepository,
+  tradingViewInstrumentMappingsRepository,
+} from "@trading-copilot/database";
 import {
   computeTradingViewFingerprint,
   type TradingViewWebhookV1Payload,
@@ -56,7 +64,19 @@ describe.skipIf(!process.env.DATABASE_URL)("TradingViewWebhookProcessor (live Po
       timeframe: "5",
       signal: "SETUP_CANDIDATE",
       direction: "LONG",
-      barTime: `2027-0${1 + Math.floor(Math.random() * 8)}-15T01:30:00.000Z`,
+      // A wide, effectively-collision-free random range - the fingerprint
+      // (and now Setup.sourceWebhookEventId's uniqueness) is keyed off this,
+      // so two tests must never accidentally share one.
+      barTime: new Date(
+        Date.UTC(
+          2027,
+          Math.floor(Math.random() * 12),
+          1 + Math.floor(Math.random() * 28),
+          Math.floor(Math.random() * 24),
+          Math.floor(Math.random() * 60),
+          Math.floor(Math.random() * 60),
+        ),
+      ).toISOString(),
       firedAt: new Date().toISOString(),
       open: "20123.25",
       high: "20128.50",
@@ -129,6 +149,96 @@ describe.skipIf(!process.env.DATABASE_URL)("TradingViewWebhookProcessor (live Po
         where: { marketSnapshotId: setup!.marketSnapshotId },
       });
       expect(totalSetupsForThisSnapshot).toBe(1);
+    },
+  );
+
+  it(
+    "does not create a second Setup when a retry finds the event already has a Setup from a " +
+      "prior attempt that crashed before reaching PROCESSED (regression: a BullMQ retry policy " +
+      "existing does not, by itself, guarantee this - see Setup.sourceWebhookEventId)",
+    async () => {
+      const payload = makeValidV1Payload();
+      const fingerprint = computeTradingViewFingerprint(payload);
+
+      const { event } = await inboundWebhookEventsRepository.createInboundWebhookEvent({
+        provider: "TRADINGVIEW",
+        schemaVersion: 1,
+        rawPayload: payload,
+        fingerprint,
+      });
+      await inboundWebhookEventsRepository.markInboundWebhookEventQueued(event.id);
+      await inboundWebhookEventsRepository.markInboundWebhookEventProcessing(event.id);
+
+      // Manually replicate exactly what the processor does up to (and
+      // including) Setup creation, then stop - simulating a crash between
+      // createSetup succeeding and the event being marked PROCESSED. The
+      // event is deliberately left at PROCESSING (not a status
+      // ALREADY_RESOLVED_STATUSES would skip).
+      const instrument = await tradingViewInstrumentMappingsRepository.resolveInstrumentMapping(
+        payload.exchange,
+        payload.symbol,
+      );
+      expect(
+        instrument,
+        "expected the seeded CME/NQ1! TradingViewInstrumentMapping to exist (pnpm db:seed)",
+      ).not.toBeNull();
+      const resolved = await strategiesRepository.findStrategyVersionByKeyAndVersion(
+        payload.strategyKey,
+        payload.strategyVersion,
+      );
+      expect(resolved).not.toBeNull();
+      const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+        instrumentId: instrument!.id,
+        timestamp: new Date(payload.barTime),
+        timeframe: "5m",
+        metadata: { integrationTest: "retry-before-processed" },
+      });
+      const preCreatedSetup = await setupsRepository.createSetup({
+        instrumentId: instrument!.id,
+        strategyId: resolved!.strategy.id,
+        strategyVersionId: resolved!.strategyVersion.id,
+        marketSnapshotId: snapshot.id,
+        direction: payload.direction,
+        source: "TRADINGVIEW",
+        plannedEntry: new Decimal(payload.close),
+        metadata: { inboundWebhookEventId: event.id },
+        sourceWebhookEventId: event.id,
+      });
+      // The real processor emits SIGNAL_ACCEPTED right after createSetup
+      // succeeds, still before the simulated crash point (scheduling
+      // expiration / marking PROCESSED) - replicate that here too so the
+      // "prior attempt" state this test sets up matches what a genuine
+      // partial run actually leaves behind.
+      await inboundWebhookEventsRepository.emitSignalAccepted(event.id, {
+        setupId: preCreatedSetup.id,
+        instrumentId: instrument!.id,
+        strategyId: resolved!.strategy.id,
+        strategyVersionId: resolved!.strategyVersion.id,
+      });
+
+      // The actual retry: the processor must find and reuse preCreatedSetup,
+      // never call createSetup a second time for this event.
+      await processor.process({ data: { inboundWebhookEventId: event.id } } as never);
+
+      const recovered = await inboundWebhookEventsRepository.getInboundWebhookEvent(event.id);
+      expect(recovered?.processingStatus).toBe("PROCESSED");
+      expect(recovered?.setupId).toBe(preCreatedSetup.id);
+
+      const setupCount = await prisma.setup.count({ where: { sourceWebhookEventId: event.id } });
+      expect(setupCount).toBe(1);
+
+      // The recovery path must still schedule the expiration job (it may
+      // not have been scheduled before the simulated crash) but must not
+      // re-announce "setup.created" for a Setup the dashboard may already
+      // know about from before the crash.
+      expect(setupExpirationQueue.add).toHaveBeenCalledTimes(1);
+      expect(publishRealtimeEvent).not.toHaveBeenCalled();
+
+      // Only one SETUP_CREATED/SIGNAL_ACCEPTED pair exists - the recovery
+      // path never re-emits them for the Setup it reused.
+      const timeline = await inboundWebhookEventsRepository.getFullTradingViewTimeline(event.id);
+      expect(timeline.filter((e) => e.eventType === "SETUP_CREATED")).toHaveLength(1);
+      expect(timeline.filter((e) => e.eventType === "SIGNAL_ACCEPTED")).toHaveLength(1);
     },
   );
 

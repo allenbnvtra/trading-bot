@@ -22,12 +22,20 @@ import { createRedisConnectionOptions } from "../common/redis-connection";
  * Orchestrates the validation funnel documented in docs/tradingview-setup.md
  * (see the milestone task's exact resolved design):
  *
- *  1. Envelope schema (schemaVersion + source only) invalid -> 400,
- *     nothing persisted (not identifiable enough to fingerprint/store).
+ *  1. Envelope schema (schemaVersion + source only) invalid -> still
+ *     durably stored (best-effort fingerprint/schemaVersion, same fallback
+ *     pattern as case 2 below), immediately marked REJECTED with
+ *     MALFORMED_PAYLOAD, but the HTTP response is still a fast, synchronous
+ *     400 and the event is never queued. Every rejection reason must stay
+ *     queryable per docs/trade-journal-design.md's "never deleted or hidden
+ *     on rejection" guarantee - a fast 400 for the caller and a durable
+ *     audit row are not in tension, so there is no reason to skip persisting
+ *     just because the shape didn't parse.
  *  2. Envelope valid but schemaVersion unsupported -> durably stored,
  *     immediately marked UNSUPPORTED, 202, never queued.
- *  3. schemaVersion 1 but the full v1 shape is invalid -> 400, nothing
- *     persisted.
+ *  3. schemaVersion 1 but the full v1 shape is invalid -> same as case 1:
+ *     durably stored, marked REJECTED with MALFORMED_PAYLOAD, still a
+ *     synchronous 400, never queued.
  *  4. Valid v1 payload -> fingerprinted and persisted; a genuine duplicate
  *     is never re-queued, a fresh event is queued for apps/worker.
  *
@@ -69,6 +77,7 @@ export class TradingViewWebhookService implements OnModuleDestroy {
       this.logger.warn(
         `Rejected TradingView webhook: invalid envelope. issues=${JSON.stringify(issues)}`,
       );
+      await this.persistMalformedRejection(rawBody, issues);
       throw new BadRequestException({ message: "Validation failed", issues });
     }
     const envelope = envelopeResult.data;
@@ -86,6 +95,7 @@ export class TradingViewWebhookService implements OnModuleDestroy {
       this.logger.warn(
         `Rejected TradingView webhook: invalid schemaVersion 1 payload. issueCount=${issues.length}`,
       );
+      await this.persistMalformedRejection(rawBody, issues, envelope.schemaVersion);
       throw new BadRequestException({ message: "Validation failed", issues });
     }
     const payload = v1Result.data;
@@ -141,6 +151,60 @@ export class TradingViewWebhookService implements OnModuleDestroy {
     });
 
     return { id: unsupported.id, processingStatus: unsupported.processingStatus };
+  }
+
+  /**
+   * Durably records a synchronous 400 rejection (envelope-invalid or
+   * v1-shape-invalid) so it stays queryable, per
+   * docs/trade-journal-design.md's "never deleted or hidden on rejection"
+   * guarantee - MALFORMED_PAYLOAD is explicitly one of the codes that
+   * guarantee covers. Uses the same fallback-fingerprint pattern as
+   * handleUnsupportedSchemaVersion (a hash of the whole raw body): the
+   * payload didn't pass even basic shape validation, so the real
+   * field-based fingerprint (which needs specific v1 fields to exist and be
+   * well-typed) cannot be computed. `schemaVersion` is best-effort: if the
+   * raw body has a numeric-looking one, use it for record-keeping, otherwise
+   * 0 (not a real version anyone would send) marks "could not even
+   * determine a schema version." This never changes the HTTP response - the
+   * caller still gets a fast, synchronous 400 either way; only an audit row
+   * is added alongside it.
+   */
+  private async persistMalformedRejection(
+    rawBody: unknown,
+    issues: { path: string; message: string }[],
+    knownSchemaVersion?: number,
+  ): Promise<void> {
+    try {
+      const body = (rawBody && typeof rawBody === "object" ? rawBody : {}) as Record<string, unknown>;
+      const rawSchemaVersion = Number((body as { schemaVersion?: unknown }).schemaVersion);
+      const schemaVersion = knownSchemaVersion ?? (Number.isFinite(rawSchemaVersion) ? rawSchemaVersion : 0);
+      const fingerprint = createHash("sha256").update(JSON.stringify(body)).digest("hex");
+      const failureMessage = issues.map((issue) => `${issue.path || "(root)"}: ${issue.message}`).join("; ");
+
+      const { event, wasDuplicate } = await inboundWebhookEventsRepository.createInboundWebhookEvent({
+        provider: "TRADINGVIEW",
+        schemaVersion,
+        rawPayload: body,
+        fingerprint,
+      });
+
+      // Same idempotency principle as the other rejection paths: a repeat
+      // delivery of the identical malformed body is already recorded from
+      // its first delivery, so this never re-marks it or emits a redundant
+      // journal event.
+      if (!wasDuplicate) {
+        await inboundWebhookEventsRepository.markInboundWebhookEventRejected(event.id, {
+          failureCode: "MALFORMED_PAYLOAD",
+          failureMessage,
+        });
+      }
+    } catch (error) {
+      // Persisting the audit row is best-effort: a failure here must never
+      // turn a client's already-correct 400 into a confusing 500. The
+      // BadRequestException the caller sees is unaffected either way.
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Failed to persist a malformed-webhook rejection audit row: ${message}`);
+    }
   }
 
   private async publishWebhookReceived(event: InboundWebhookEvent): Promise<void> {

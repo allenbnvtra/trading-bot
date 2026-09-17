@@ -130,7 +130,7 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.REDIS_URL)(
       },
     );
 
-    it("malformed v1 payload (mirrors fixtures/tradingview/malformed.json) -> 400 synchronously, nothing persisted", async () => {
+    it("malformed v1 payload (mirrors fixtures/tradingview/malformed.json) -> 400 synchronously, still durably persisted as REJECTED/MALFORMED_PAYLOAD", async () => {
       const beforeCount = await prisma.inboundWebhookEvent.count();
 
       const response = await fetch(`${baseUrl}/webhooks/tradingview`, {
@@ -162,20 +162,40 @@ describe.skipIf(!process.env.DATABASE_URL || !process.env.REDIS_URL)(
       expect(Array.isArray(body.issues)).toBe(true);
       expect(body.issues.length).toBeGreaterThan(0);
 
-      expect(await prisma.inboundWebhookEvent.count()).toBe(beforeCount);
+      // Still a fast synchronous 400 for the caller, but durably recorded
+      // per docs/trade-journal-design.md's "never deleted or hidden on
+      // rejection" guarantee - never queued to the worker either.
+      expect(await prisma.inboundWebhookEvent.count()).toBe(beforeCount + 1);
+      const stored = await prisma.inboundWebhookEvent.findFirst({
+        orderBy: { receivedAt: "desc" },
+      });
+      expect(stored?.processingStatus).toBe("REJECTED");
+      expect(stored?.failureCode).toBe("MALFORMED_PAYLOAD");
     });
 
-    it("invalid envelope (missing schemaVersion) -> 400 synchronously, nothing persisted", async () => {
+    it("invalid envelope (missing schemaVersion) -> 400 synchronously, still durably persisted as REJECTED/MALFORMED_PAYLOAD", async () => {
       const beforeCount = await prisma.inboundWebhookEvent.count();
 
       const response = await fetch(`${baseUrl}/webhooks/tradingview`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ source: "TRADINGVIEW", foo: "bar" }),
+        // randomUUID() keeps the fallback fingerprint (a hash of the whole
+        // body, see persistMalformedRejection) unique across repeated runs
+        // of this test against the same persistent dev database - otherwise
+        // a rerun would see this exact body as a duplicate of its own
+        // earlier delivery and correctly not insert a second row, which
+        // would make this assertion flaky rather than the code being wrong.
+        body: JSON.stringify({ source: "TRADINGVIEW", foo: "bar", testRunId: randomUUID() }),
       });
 
       expect(response.status).toBe(400);
-      expect(await prisma.inboundWebhookEvent.count()).toBe(beforeCount);
+      expect(await prisma.inboundWebhookEvent.count()).toBe(beforeCount + 1);
+      const stored = await prisma.inboundWebhookEvent.findFirst({
+        orderBy: { receivedAt: "desc" },
+      });
+      expect(stored?.processingStatus).toBe("REJECTED");
+      expect(stored?.failureCode).toBe("MALFORMED_PAYLOAD");
+      expect(stored?.schemaVersion).toBe(0);
     });
 
     it("unsupported schemaVersion (mirrors fixtures/tradingview/unsupported-schema.json) -> 202 UNSUPPORTED, persisted, never enqueued", async () => {

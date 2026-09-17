@@ -7,6 +7,7 @@ const { inboundWebhookEventsRepository } = vi.hoisted(() => ({
     createInboundWebhookEvent: vi.fn(),
     markInboundWebhookEventQueued: vi.fn(),
     markInboundWebhookEventUnsupported: vi.fn(),
+    markInboundWebhookEventRejected: vi.fn(),
     listInboundWebhookEvents: vi.fn(),
     getInboundWebhookEvent: vi.fn(),
     getFullTradingViewTimeline: vi.fn(),
@@ -63,23 +64,59 @@ describe("TradingViewWebhookService", () => {
   });
 
   describe("envelope validation", () => {
-    it("rejects with 400 and persists nothing when schemaVersion is missing", async () => {
+    beforeEach(() => {
+      inboundWebhookEventsRepository.createInboundWebhookEvent.mockResolvedValue({
+        event: { id: "event-malformed", processingStatus: "RECEIVED" },
+        wasDuplicate: false,
+      });
+      inboundWebhookEventsRepository.markInboundWebhookEventRejected.mockResolvedValue({
+        id: "event-malformed",
+        processingStatus: "REJECTED",
+      });
+    });
+
+    it("rejects with 400 but still durably persists a REJECTED/MALFORMED_PAYLOAD row when schemaVersion is missing", async () => {
       await expect(service.ingestWebhook({ source: "TRADINGVIEW" })).rejects.toBeInstanceOf(
         BadRequestException,
       );
-      expect(inboundWebhookEventsRepository.createInboundWebhookEvent).not.toHaveBeenCalled();
+      expect(inboundWebhookEventsRepository.createInboundWebhookEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "TRADINGVIEW", schemaVersion: 0 }),
+      );
+      expect(inboundWebhookEventsRepository.markInboundWebhookEventRejected).toHaveBeenCalledWith(
+        "event-malformed",
+        expect.objectContaining({ failureCode: "MALFORMED_PAYLOAD" }),
+      );
     });
 
-    it("rejects with 400 and persists nothing when source is not TRADINGVIEW", async () => {
+    it("rejects with 400 but still durably persists a REJECTED/MALFORMED_PAYLOAD row when source is not TRADINGVIEW", async () => {
       await expect(
         service.ingestWebhook({ schemaVersion: 1, source: "SOMETHING_ELSE" }),
       ).rejects.toBeInstanceOf(BadRequestException);
-      expect(inboundWebhookEventsRepository.createInboundWebhookEvent).not.toHaveBeenCalled();
+      expect(inboundWebhookEventsRepository.createInboundWebhookEvent).toHaveBeenCalled();
+      expect(inboundWebhookEventsRepository.markInboundWebhookEventRejected).toHaveBeenCalledWith(
+        "event-malformed",
+        expect.objectContaining({ failureCode: "MALFORMED_PAYLOAD" }),
+      );
     });
 
-    it("rejects with 400 and persists nothing for a non-object body", async () => {
+    it("rejects with 400 but still durably persists a REJECTED/MALFORMED_PAYLOAD row for a non-object body", async () => {
       await expect(service.ingestWebhook("not-an-object")).rejects.toBeInstanceOf(BadRequestException);
-      expect(inboundWebhookEventsRepository.createInboundWebhookEvent).not.toHaveBeenCalled();
+      expect(inboundWebhookEventsRepository.createInboundWebhookEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ rawPayload: {} }),
+      );
+      expect(inboundWebhookEventsRepository.markInboundWebhookEventRejected).toHaveBeenCalled();
+    });
+
+    it("never persists a duplicate row or re-marks it for a repeated identical malformed delivery", async () => {
+      inboundWebhookEventsRepository.createInboundWebhookEvent.mockResolvedValue({
+        event: { id: "event-malformed", processingStatus: "REJECTED" },
+        wasDuplicate: true,
+      });
+
+      await expect(service.ingestWebhook({ source: "TRADINGVIEW" })).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(inboundWebhookEventsRepository.markInboundWebhookEventRejected).not.toHaveBeenCalled();
     });
   });
 
@@ -113,7 +150,16 @@ describe("TradingViewWebhookService", () => {
   });
 
   describe("schemaVersion 1 validation", () => {
-    it("rejects with 400 and persists nothing for an invalid v1 payload", async () => {
+    it("rejects with 400 but still durably persists a REJECTED/MALFORMED_PAYLOAD row for an invalid v1 payload", async () => {
+      inboundWebhookEventsRepository.createInboundWebhookEvent.mockResolvedValue({
+        event: { id: "event-v1-malformed", processingStatus: "RECEIVED" },
+        wasDuplicate: false,
+      });
+      inboundWebhookEventsRepository.markInboundWebhookEventRejected.mockResolvedValue({
+        id: "event-v1-malformed",
+        processingStatus: "REJECTED",
+      });
+
       const malformed = makeValidV1Body({
         direction: "SIDEWAYS",
         barTime: "not-a-valid-timestamp",
@@ -123,7 +169,13 @@ describe("TradingViewWebhookService", () => {
       });
 
       await expect(service.ingestWebhook(malformed)).rejects.toBeInstanceOf(BadRequestException);
-      expect(inboundWebhookEventsRepository.createInboundWebhookEvent).not.toHaveBeenCalled();
+      expect(inboundWebhookEventsRepository.createInboundWebhookEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: "TRADINGVIEW", schemaVersion: 1 }),
+      );
+      expect(inboundWebhookEventsRepository.markInboundWebhookEventRejected).toHaveBeenCalledWith(
+        "event-v1-malformed",
+        expect.objectContaining({ failureCode: "MALFORMED_PAYLOAD" }),
+      );
     });
   });
 

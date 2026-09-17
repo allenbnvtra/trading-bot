@@ -478,6 +478,16 @@ model Setup {
   updatedAt DateTime  @updatedAt
   expiresAt DateTime?
 
+  // Milestone 3: set only for a TRADINGVIEW-sourced Setup, to the
+  // InboundWebhookEvent that produced it. The @unique constraint is what
+  // makes Setup creation idempotent per webhook event under a BullMQ retry:
+  // if a worker crashes after createSetup but before the InboundWebhookEvent
+  // is marked PROCESSED, a retry re-processing the same event must not
+  // create a second Setup. The processor checks for an existing row here
+  // before creating a new one, the same "database constraint, not
+  // check-then-insert" principle as InboundWebhookEvent.fingerprint.
+  sourceWebhookEventId String? @unique
+
   riskCalculations     RiskCalculation[]
   journalTrades        JournalTrade[]
   screenshots          TradeScreenshot[]

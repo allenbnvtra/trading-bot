@@ -71,6 +71,10 @@ A duplicate physical delivery of the same underlying TradingView trigger must ne
 
 This is safe even when two identical deliveries arrive genuinely concurrently (not just sequentially): see `packages/database/src/webhook-ingestion.integration.test.ts`'s concurrency test.
 
+A distinct idempotency requirement is a **retried processing attempt** of the *same* `InboundWebhookEvent` (BullMQ retries on a thrown error or a crashed worker), which must also never create a second `Setup` even though it is not a duplicate delivery. `Setup.sourceWebhookEventId` carries the same kind of database `@unique` constraint as `fingerprint`: before creating a `Setup`, the worker checks whether one already exists for this event id and reuses it if so, so a retry landing after a crash between `Setup` creation and the event being marked `PROCESSED` recovers cleanly instead of creating a duplicate.
+
+Rejections that never reach the worker at all (an envelope that doesn't parse, or a `schemaVersion: 1` payload that fails the strict shape check) are still durably stored, not silently dropped: the caller gets a fast, synchronous `400`, and the event is recorded as `REJECTED`/`MALFORMED_PAYLOAD` using a fallback fingerprint (a hash of the whole raw body, since the real field-based fingerprint needs specific fields to exist and parse) so it stays queryable via `GET /webhooks/tradingview/events`.
+
 ## Journal timeline
 
 Every step is journaled via the existing `JournalEvent` architecture (see `docs/trade-journal-design.md`); there is no separate/competing audit system. Events before a `Setup` exists are correlated on the `InboundWebhookEvent`'s own id; once a `Setup` is created, its own events (`SETUP_CREATED` onward) are correlated on the `Setup`'s id, per the existing Milestone 2 convention. `getFullTradingViewTimeline` merges both groups (via `InboundWebhookEvent.setupId`) into one chronological reconstruction:
@@ -80,6 +84,8 @@ WEBHOOK_RECEIVED → WEBHOOK_NORMALIZED → SETUP_CREATED → SIGNAL_ACCEPTED �
 ```
 
 `SIGNAL_ACCEPTED` necessarily comes after `SETUP_CREATED`, not before it: it records the resolved `instrumentId`/`strategyId`/`strategyVersionId` against the `Setup` that resolution just produced, so the `Setup` (and its own `SETUP_CREATED` event) must already exist by the time it's emitted.
+
+Like Milestone 2's documented gap for the `PREPARE` transition (`docs/trade-journal-design.md`'s emission-mapping table), two internal `InboundWebhookEvent` bookkeeping transitions have no dedicated journal event: `RECEIVED → QUEUED` and `QUEUED → PROCESSING`. These are deliberate, not oversights: `WEBHOOK_RECEIVED` already establishes "we got it," and the fixed `JournalEventType` vocabulary has no separate type for either transition. See the inline comments on `markInboundWebhookEventQueued`/`markInboundWebhookEventProcessing` in `packages/database/src/repositories/inbound-webhook-events.ts`.
 
 Or, for a rejected delivery:
 
@@ -165,7 +171,7 @@ See `fixtures/tradingview/README.md` for the full fixture list (`valid-long.json
 8. `curl http://localhost:3001/setups/<id>/timeline` (or the combined webhook+setup timeline endpoint): verify the full journal.
 9. Open `http://localhost:3000/live-setups`: verify the setup appears live in the dashboard.
 10. Re-POST the **same** fixture (or `duplicate.json`): verify the HTTP response indicates a duplicate and `GET /setups?source=TRADINGVIEW` still shows exactly **one** setup.
-11. `curl -X POST ... --data @fixtures/tradingview/malformed.json`: verify a fast, clear `400` rejection.
+11. `curl -X POST ... --data @fixtures/tradingview/malformed.json`: verify a fast, clear `400` rejection, then confirm via `GET /webhooks/tradingview/events?processingStatus=REJECTED` that it was still durably recorded with `failureCode: MALFORMED_PAYLOAD`.
 12. `curl -X POST ... --data @fixtures/tradingview/unknown-instrument.json`: verify the event is stored and `REJECTED` with `failureCode: UNKNOWN_INSTRUMENT`, and no `Setup` is created.
 
 ## Configuring a real TradingView alert
@@ -178,3 +184,10 @@ See `fixtures/tradingview/README.md` for the full fixture list (`valid-long.json
 ## Out-of-order delivery
 
 Each distinct signal (identified by its fingerprint, which includes `barTime`) creates its own independent `Setup`; this design never updates an existing `Setup` in place from a later webhook delivery. Consequently, out-of-order HTTP arrival is safe by construction: there is no shared mutable state that an older event could regress. If this ever changes (e.g. a future milestone lets a later signal amend an earlier `Setup`), that logic must compare domain timestamps (`barTime`), never assume HTTP arrival order reflects market-event order.
+
+## Known limitations
+
+- **Retry policy.** Both the TradingView webhook queue and the setup-expiration queue are configured with `attempts: 3` and exponential backoff (`apps/api/src/webhooks/tradingview-webhook.module.ts`, `apps/worker/src/app.module.ts`), so a transient failure (a momentary Postgres or Redis blip) is retried automatically rather than marking the event `FAILED` permanently on the first attempt. Both processors are written to be safe under retry: `ALREADY_RESOLVED_STATUSES` in `tradingview-webhook.processor.ts` skips reprocessing an event that already reached a terminal outcome, `Setup.sourceWebhookEventId`'s uniqueness (see "Idempotency" above) prevents a retry that lands *between* `Setup` creation and the event being marked `PROCESSED` from creating a second `Setup`, and the terminal-status check in `setup-expiration.processor.ts` prevents a duplicate expiration-job schedule from ever overwriting an already-resolved `Setup`.
+- **A narrow crash window between event persistence and enqueue is not yet reconciled.** In `tradingview-webhook.service.ts`, the `InboundWebhookEvent` row is created (claiming its fingerprint) before the BullMQ job is enqueued. If the process crashes in that exact window, the row exists but no job was ever queued to process it, and TradingView's retried delivery (same fingerprint) is now recorded as a duplicate rather than actually queued, since the fingerprint is already claimed. This is a narrow, low-likelihood window and does not risk a duplicate `Setup`, but it can leave an event stuck at `RECEIVED`/`QUEUED` with nothing left to process it. There is no reconciliation sweep for this today; if this becomes a real operational concern, the fix is a small periodic job that requeues any `InboundWebhookEvent` older than a few minutes and still in `RECEIVED`/`QUEUED`, not a redesign of the ingestion path itself.
+- **`GET /health`'s `tradingViewIngestion` check reads every `InboundWebhookEvent` row to find the most recent one** (`apps/api/src/health/health.service.ts`), rather than a dedicated "most recent event" query. Fine at today's volume for a personal tool; revisit if this table grows large enough for `/health` latency to matter.
+- **`getFullTradingViewTimeline`'s chronological merge has no tiebreaker for two events sharing an identical millisecond timestamp.** It sorts the webhook-side and Setup-side event groups purely by `JournalEvent.timestamp` (`@default(now())`, millisecond precision); `Array.prototype.sort`'s stability happens to preserve the correct order today (the webhook group is concatenated first), but that is incidental, not a guarantee. A monotonic sequence/insertion-order column on `JournalEvent` would make this deterministic regardless of clock precision. Not observed to misfire in practice; worth hardening if it ever does.

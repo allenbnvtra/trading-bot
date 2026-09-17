@@ -20,7 +20,21 @@ const rateTtlSeconds = process.env.TRADINGVIEW_WEBHOOK_RATE_TTL_SECONDS
 
 @Module({
   imports: [
-    BullModule.registerQueue({ name: TRADINGVIEW_WEBHOOK_QUEUE }),
+    // defaultJobOptions applies to jobs added from a Queue instance obtained
+    // through this registration - apps/api is where TradingView webhook jobs
+    // are actually enqueued (tradingview-webhook.service.ts), so a retry
+    // policy belongs here, not apps/worker's consumer-side registration.
+    // Without this, a transient failure marks the InboundWebhookEvent FAILED
+    // permanently with no automatic retry, even though the worker's own
+    // processor already has retry-safe idempotency logic built in (see
+    // ALREADY_RESOLVED_STATUSES in tradingview-webhook.processor.ts).
+    BullModule.registerQueue({
+      name: TRADINGVIEW_WEBHOOK_QUEUE,
+      defaultJobOptions: {
+        attempts: 3,
+        backoff: { type: "exponential", delay: 5_000 },
+      },
+    }),
     ThrottlerModule.forRoot([
       {
         name: "tradingview-webhook",

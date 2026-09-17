@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import Decimal from "decimal.js";
 import { z } from "zod";
 import {
   DIRECTIONS,
@@ -188,20 +189,23 @@ export function normalizeTradingViewPayload(
     };
   }
 
-  // Candle invariants (same discipline as packages/database's CSV importer,
-  // see packages/shared-types/src/csv-candle.ts) — reject, never clamp/fix.
-  const open = Number(payload.open);
-  const high = Number(payload.high);
-  const low = Number(payload.low);
-  const close = Number(payload.close);
-  const volume = Number(payload.volume);
+  // Candle invariants (same Decimal-based discipline as packages/database's
+  // CSV importer, see packages/database/src/candle-importer.ts) - reject,
+  // never clamp/fix. Decimal, not Number: this is a price comparison, and
+  // CLAUDE.md forbids careless floating-point arithmetic anywhere money or
+  // price precision is involved, even a comparison-only check like this one.
+  const open = new Decimal(payload.open);
+  const high = new Decimal(payload.high);
+  const low = new Decimal(payload.low);
+  const close = new Decimal(payload.close);
+  const volume = new Decimal(payload.volume);
   const invariantErrors: string[] = [];
-  if (high < open) invariantErrors.push("high must be >= open");
-  if (high < close) invariantErrors.push("high must be >= close");
-  if (high < low) invariantErrors.push("high must be >= low");
-  if (low > open) invariantErrors.push("low must be <= open");
-  if (low > close) invariantErrors.push("low must be <= close");
-  if (volume < 0) invariantErrors.push("volume must be >= 0");
+  if (high.lt(open)) invariantErrors.push("high must be >= open");
+  if (high.lt(close)) invariantErrors.push("high must be >= close");
+  if (high.lt(low)) invariantErrors.push("high must be >= low");
+  if (low.gt(open)) invariantErrors.push("low must be <= open");
+  if (low.gt(close)) invariantErrors.push("low must be <= close");
+  if (volume.lt(0)) invariantErrors.push("volume must be >= 0");
   if (invariantErrors.length > 0) {
     return { ok: false, failureCode: "MALFORMED_PAYLOAD", message: invariantErrors.join("; ") };
   }

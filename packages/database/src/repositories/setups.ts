@@ -36,6 +36,8 @@ export interface CreateSetupInput {
   decisionSummary?: string | null;
   metadata?: Record<string, unknown>;
   expiresAt?: Date | null;
+  /** Milestone 3: set only by the TradingView webhook processor. See the schema comment on Setup.sourceWebhookEventId. */
+  sourceWebhookEventId?: string | null;
 }
 
 /**
@@ -60,6 +62,7 @@ export async function createSetup(input: CreateSetupInput): Promise<Setup> {
         decisionSummary: input.decisionSummary ?? null,
         metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,
         expiresAt: input.expiresAt ?? null,
+        sourceWebhookEventId: input.sourceWebhookEventId ?? null,
       },
     });
 
@@ -84,6 +87,21 @@ export async function createSetup(input: CreateSetupInput): Promise<Setup> {
 
 export async function getSetup(id: string): Promise<Setup | null> {
   const row = await prisma.setup.findUnique({ where: { id } });
+  return row ? mapSetup(row) : null;
+}
+
+/**
+ * The idempotency guard for Setup creation from a webhook event (Milestone
+ * 3): a caller must check this before creating a new Setup for a given
+ * InboundWebhookEvent id, so a BullMQ retry that re-runs webhook processing
+ * (e.g. after a crash between createSetup and the event being marked
+ * PROCESSED) finds and reuses the Setup a previous attempt already created,
+ * rather than creating a second one. The database's own @unique constraint
+ * on sourceWebhookEventId is the actual backstop if this check is ever
+ * skipped or races.
+ */
+export async function findSetupBySourceWebhookEventId(webhookEventId: string): Promise<Setup | null> {
+  const row = await prisma.setup.findUnique({ where: { sourceWebhookEventId: webhookEventId } });
   return row ? mapSetup(row) : null;
 }
 

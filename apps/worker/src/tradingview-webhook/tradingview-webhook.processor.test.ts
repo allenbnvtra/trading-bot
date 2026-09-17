@@ -22,7 +22,7 @@ const {
     emitSignalAccepted: vi.fn(),
   },
   marketSnapshotsRepository: { createMarketSnapshot: vi.fn() },
-  setupsRepository: { createSetup: vi.fn() },
+  setupsRepository: { createSetup: vi.fn(), findSetupBySourceWebhookEventId: vi.fn() },
   strategiesRepository: { findStrategyVersionByKeyAndVersion: vi.fn() },
   tradingViewInstrumentMappingsRepository: { resolveInstrumentMapping: vi.fn() },
   publishRealtimeEvent: vi.fn().mockResolvedValue(undefined),
@@ -98,6 +98,10 @@ describe("TradingViewWebhookProcessor", () => {
     setupExpirationQueue = makeQueue();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- BullMQ Queue mock.
     processor = new TradingViewWebhookProcessor(setupExpirationQueue as any);
+    // Default: no prior Setup exists for this webhook event, so the normal
+    // creation path runs. Tests exercising the recovery/idempotency branch
+    // override this to return an existing Setup.
+    setupsRepository.findSetupBySourceWebhookEventId.mockResolvedValue(null);
   });
 
   it("short-circuits without reprocessing when the event is already PROCESSED (idempotent retry)", async () => {
@@ -269,4 +273,55 @@ describe("TradingViewWebhookProcessor", () => {
 
     expect(setupsRepository.createSetup).toHaveBeenCalledTimes(1);
   });
+
+  it(
+    "regression: a retry landing while the event is still PROCESSING/FAILED (not yet PROCESSED) " +
+      "finds and reuses an already-created Setup instead of creating a second one",
+    async () => {
+      // The event is stuck at PROCESSING/FAILED - neither is in
+      // ALREADY_RESOLVED_STATUSES, so the early short-circuit does not
+      // apply and process() runs the full pipeline again.
+      inboundWebhookEventsRepository.getInboundWebhookEvent.mockResolvedValue(
+        makeEvent({ processingStatus: "FAILED" }),
+      );
+      tradingViewInstrumentMappingsRepository.resolveInstrumentMapping.mockResolvedValue({
+        id: "instrument-1",
+      });
+      strategiesRepository.findStrategyVersionByKeyAndVersion.mockResolvedValue({
+        strategy: { id: "strategy-1", key: "ema-trend-pullback" },
+        strategyVersion: { id: "strategy-version-1", version: "1.0.0" },
+      });
+      // A prior attempt already created a Setup for this webhook event
+      // before crashing/throwing.
+      setupsRepository.findSetupBySourceWebhookEventId.mockResolvedValue({
+        id: "setup-existing",
+        instrumentId: "instrument-1",
+        direction: "LONG",
+        status: "WATCH",
+        expiresAt: new Date("2026-09-18T02:30:00.000Z"),
+      });
+
+      await processor.process(makeJob("event-1"));
+
+      expect(marketSnapshotsRepository.createMarketSnapshot).not.toHaveBeenCalled();
+      expect(setupsRepository.createSetup).not.toHaveBeenCalled();
+      expect(inboundWebhookEventsRepository.emitSignalAccepted).not.toHaveBeenCalled();
+
+      // Still recovers: the expiration job is (re-)scheduled and the event
+      // is marked PROCESSED against the *existing* Setup.
+      expect(setupExpirationQueue.add).toHaveBeenCalledWith(
+        "expire",
+        { setupId: "setup-existing" },
+        expect.objectContaining({ delay: expect.any(Number) }),
+      );
+      expect(inboundWebhookEventsRepository.markInboundWebhookEventProcessed).toHaveBeenCalledWith(
+        "event-1",
+        expect.objectContaining({ setupId: "setup-existing" }),
+      );
+
+      // No duplicate "setup.created" announcement for a Setup the dashboard
+      // may already know about from before the crash.
+      expect(publishRealtimeEvent).not.toHaveBeenCalled();
+    },
+  );
 });

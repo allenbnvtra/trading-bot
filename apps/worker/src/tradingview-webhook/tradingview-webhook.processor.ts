@@ -140,47 +140,84 @@ export class TradingViewWebhookProcessor extends WorkerHost {
 
       const barTimestamp = new Date(signal.barTimestamp);
 
-      const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
-        instrumentId: instrument.id,
-        timestamp: barTimestamp,
-        timeframe: signal.timeframe,
-        metadata: { ...signal.priceContext },
-      });
+      // Idempotency guard for Setup creation itself (distinct from the
+      // ALREADY_RESOLVED_STATUSES check above, which only catches a retry
+      // once the event reaches a terminal processingStatus). A worker crash
+      // or thrown error can land the event at PROCESSING or FAILED - neither
+      // blocks reprocessing - *after* a Setup has already been created for
+      // it. Without this check, a retry would re-run normalization,
+      // instrument/strategy resolution (both pure/idempotent, safe to
+      // repeat), then create a *second* MarketSnapshot and *second* Setup
+      // for the same physical webhook delivery, which is exactly the
+      // duplicate-Setup outcome the fingerprint-uniqueness design exists to
+      // prevent, just reached through a different path (retry, not
+      // duplicate delivery). See Setup.sourceWebhookEventId's @unique
+      // constraint in prisma/schema.prisma.
+      let setup = await setupsRepository.findSetupBySourceWebhookEventId(id);
+      const justCreated = !setup;
 
-      const expiresAt = new Date(barTimestamp.getTime() + getSetupExpiryMinutes() * 60_000);
+      if (!setup) {
+        const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+          instrumentId: instrument.id,
+          timestamp: barTimestamp,
+          timeframe: signal.timeframe,
+          metadata: { ...signal.priceContext },
+        });
 
-      const setup = await setupsRepository.createSetup({
-        instrumentId: instrument.id,
-        strategyId: strategy.id,
-        strategyVersionId: strategyVersion.id,
-        marketSnapshotId: snapshot.id,
-        direction: signal.direction,
-        source: "TRADINGVIEW",
-        plannedEntry: new Decimal(signal.priceContext.close),
-        plannedStop: null,
-        plannedTarget1: null,
-        metadata: {
-          inboundWebhookEventId: id,
-          externalEventFingerprint: signal.externalEventFingerprint,
-          tradingViewSignalMetadata: signal.metadata,
-        },
-        expiresAt,
-      });
+        setup = await setupsRepository.createSetup({
+          instrumentId: instrument.id,
+          strategyId: strategy.id,
+          strategyVersionId: strategyVersion.id,
+          marketSnapshotId: snapshot.id,
+          direction: signal.direction,
+          source: "TRADINGVIEW",
+          plannedEntry: new Decimal(signal.priceContext.close),
+          plannedStop: null,
+          plannedTarget1: null,
+          metadata: {
+            inboundWebhookEventId: id,
+            externalEventFingerprint: signal.externalEventFingerprint,
+            tradingViewSignalMetadata: signal.metadata,
+          },
+          expiresAt: new Date(barTimestamp.getTime() + getSetupExpiryMinutes() * 60_000),
+          sourceWebhookEventId: id,
+        });
 
-      await inboundWebhookEventsRepository.emitSignalAccepted(id, {
-        setupId: setup.id,
-        instrumentId: instrument.id,
-        strategyId: strategy.id,
-        strategyVersionId: strategyVersion.id,
-      });
+        await inboundWebhookEventsRepository.emitSignalAccepted(id, {
+          setupId: setup.id,
+          instrumentId: instrument.id,
+          strategyId: strategy.id,
+          strategyVersionId: strategyVersion.id,
+        });
+      } else {
+        this.logger.log(
+          `InboundWebhookEvent ${id} already has a Setup (${setup.id}) from a prior attempt; recovering without creating a duplicate`,
+        );
+      }
+
+      // Scheduled before markInboundWebhookEventProcessed (not after, as an
+      // earlier version of this file did): PROCESSED blocks any future
+      // retry, so if the process crashed between these two steps with the
+      // old ordering, the event would be permanently PROCESSED with no
+      // expiration job ever scheduled - the Setup's own expiresAt would then
+      // silently never be honored. Scheduling first means a crash here just
+      // means a retry (or the justCreated/recovery branch above) schedules
+      // it again; a duplicate delayed job is harmless, since
+      // setup-expiration.processor.ts no-ops on an already-terminal Setup.
+      const expiresAt = setup.expiresAt ?? new Date(barTimestamp.getTime() + getSetupExpiryMinutes() * 60_000);
+      const delay = Math.max(0, expiresAt.getTime() - Date.now());
+      await this.setupExpirationQueue.add(SETUP_EXPIRATION_JOB, { setupId: setup.id }, { delay });
 
       await inboundWebhookEventsRepository.markInboundWebhookEventProcessed(id, {
         normalizedPayload: signal as unknown as Record<string, unknown>,
         setupId: setup.id,
       });
 
-      const delay = Math.max(0, expiresAt.getTime() - Date.now());
-      await this.setupExpirationQueue.add(SETUP_EXPIRATION_JOB, { setupId: setup.id }, { delay });
+      // Only announce "created" to the dashboard the first time - a recovery
+      // replay reusing an existing Setup has nothing new to announce.
+      if (!justCreated) {
+        return;
+      }
 
       await publishRealtimeEvent({
         type: "setup.created",

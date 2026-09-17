@@ -1,28 +1,28 @@
-// INTEGRATION TEST STRATEGY — NOT A RECOMMENDED TRADING STRATEGY
+// INTEGRATION TEST STRATEGY - NOT A RECOMMENDED TRADING STRATEGY
 //
 // Purpose: fire a webhook-compatible alert so Trading Copilot's
 // POST /webhooks/tradingview endpoint can be exercised against a real
 // TradingView alert, end to end. It is a deliberately simple restatement of
 // the Milestone 1 "EMA Trend Pullback v1.0.0" strategy
-// (packages/strategy-engine/src/strategies/ema-trend-pullback.ts) — same
+// (packages/strategy-engine/src/strategies/ema-trend-pullback.ts): same
 // default parameters (fastEmaPeriod=20, slowEmaPeriod=50, atrPeriod=14),
-// same pullback logic — so a fired alert corresponds to a signal the
+// same pullback logic, so a fired alert corresponds to a signal the
 // deterministic backend already knows how to evaluate.
 //
 // Do NOT treat this as a recommended or optimized trading strategy. It has
 // not been tuned for profitability, exactly like its Milestone 1
-// counterpart — see CLAUDE.md "Do not optimize the example strategy for
-// profitability."
+// counterpart (see CLAUDE.md "Do not optimize the example strategy for
+// profitability.").
 //
 // Setup:
 //   1. Add this indicator to a chart.
-//   2. Create an alert on "EMA Trend Pullback (webhook test) — LONG",
+//   2. Create an alert on "EMA Trend Pullback (webhook test) - LONG",
 //      condition "Once Per Bar Close", webhook URL pointing at your
 //      publicly reachable POST /webhooks/tradingview endpoint (TradingView
-//      cannot call http://localhost directly — see docs/tradingview-setup.md
+//      cannot call http://localhost directly; see docs/tradingview-setup.md
 //      for how to test locally without one).
 //   3. Repeat for the SHORT alert condition. TradingView alert messages are
-//      static text with placeholders substituted at fire time — a single
+//      static text with placeholders substituted at fire time: a single
 //      alert cannot conditionally emit "LONG" vs "SHORT", which is why this
 //      script defines two separate alertcondition() calls with two
 //      hardcoded direction values, one per side, rather than one
@@ -30,7 +30,7 @@
 //
 // Placeholders used below ({{exchange}}, {{ticker}}, {{interval}}, {{time}},
 // {{timenow}}, {{open}}, {{high}}, {{low}}, {{close}}, {{volume}}) are all
-// standard, currently-supported TradingView alert message placeholders — no
+// standard, currently-supported TradingView alert message placeholders. No
 // invented/unsupported placeholder is used here.
 
 //@version=5
@@ -47,20 +47,20 @@ plot(fastEma, "Fast EMA", color = color.blue)
 plot(slowEma, "Slow EMA", color = color.orange)
 
 // Same pullback condition as the Milestone 1 strategy: the fast EMA is above
-// (below) the slow EMA — an established trend — and the close just crossed
+// (below) the slow EMA, an established trend, and the close just crossed
 // back above (below) the fast EMA after having pulled back to or through it.
 longCondition  = fastEma > slowEma and close[1] <= fastEma[1] and close > fastEma
 shortCondition = fastEma < slowEma and close[1] >= fastEma[1] and close < fastEma
 
 // schemaVersion/strategyKey/strategyVersion/exchange/symbol/timeframe/signal
 // match packages/shared-types/src/tradingview.ts's tradingViewWebhookV1Schema
-// exactly — see docs/tradingview-setup.md for the full field reference.
+// exactly; see docs/tradingview-setup.md for the full field reference.
 longMessage = '{"schemaVersion":1,"source":"TRADINGVIEW","strategyKey":"ema-trend-pullback","strategyVersion":"1.0.0","exchange":"{{exchange}}","symbol":"{{ticker}}","timeframe":"{{interval}}","signal":"SETUP_CANDIDATE","direction":"LONG","barTime":"{{time}}","firedAt":"{{timenow}}","open":"{{open}}","high":"{{high}}","low":"{{low}}","close":"{{close}}","volume":"{{volume}}"}'
 
 shortMessage = '{"schemaVersion":1,"source":"TRADINGVIEW","strategyKey":"ema-trend-pullback","strategyVersion":"1.0.0","exchange":"{{exchange}}","symbol":"{{ticker}}","timeframe":"{{interval}}","signal":"SETUP_CANDIDATE","direction":"SHORT","barTime":"{{time}}","firedAt":"{{timenow}}","open":"{{open}}","high":"{{high}}","low":"{{low}}","close":"{{close}}","volume":"{{volume}}"}'
 
-alertcondition(longCondition, title = "EMA Trend Pullback (webhook test) — LONG", message = longMessage)
-alertcondition(shortCondition, title = "EMA Trend Pullback (webhook test) — SHORT", message = shortMessage)
+alertcondition(longCondition, title = "EMA Trend Pullback (webhook test) - LONG", message = longMessage)
+alertcondition(shortCondition, title = "EMA Trend Pullback (webhook test) - SHORT", message = shortMessage)
 
 plotshape(longCondition, title = "LONG signal", style = shape.triangleup, location = location.belowbar, color = color.green, size = size.small)
 plotshape(shortCondition, title = "SHORT signal", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small)

@@ -456,6 +456,7 @@ export interface PrismaSetupRow {
   createdAt: Date;
   updatedAt: Date;
   expiresAt: Date | null;
+  sourceWebhookEventId: string | null;
 }
 
 export function mapSetup(row: PrismaSetupRow): Setup {
@@ -477,6 +478,7 @@ export function mapSetup(row: PrismaSetupRow): Setup {
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     expiresAt: row.expiresAt,
+    sourceWebhookEventId: row.sourceWebhookEventId,
   };
 }
 
