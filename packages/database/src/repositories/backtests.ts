@@ -173,3 +173,29 @@ export async function upsertBacktestMetrics(
   });
   return mapBacktestMetrics(row);
 }
+
+export async function getBacktestMetrics(backtestId: string): Promise<BacktestMetrics | null> {
+  const row = await prisma.backtestMetrics.findUnique({ where: { backtestId } });
+  return row ? mapBacktestMetrics(row) : null;
+}
+
+export async function listBacktestTrades(backtestId: string): Promise<BacktestTrade[]> {
+  const rows = await prisma.backtestTrade.findMany({
+    where: { backtestId },
+    orderBy: { entryTimestamp: "asc" },
+  });
+  return rows.map(mapBacktestTrade);
+}
+
+/**
+ * Scoped by both backtestId and tradeId so a trade ID belonging to a
+ * different backtest correctly resolves to "not found" (404 at the API
+ * layer) rather than leaking a trade across backtests.
+ */
+export async function getBacktestTrade(
+  backtestId: string,
+  tradeId: string,
+): Promise<BacktestTrade | null> {
+  const row = await prisma.backtestTrade.findFirst({ where: { id: tradeId, backtestId } });
+  return row ? mapBacktestTrade(row) : null;
+}
