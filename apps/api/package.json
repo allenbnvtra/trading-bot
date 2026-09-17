@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@trading-copilot/analytics": "workspace:*",
     "@trading-copilot/database": "workspace:*",
     "@trading-copilot/shared-types": "workspace:*",
     "@trading-copilot/trading-domain": "workspace:*",

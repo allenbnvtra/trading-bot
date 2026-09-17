@@ -1,0 +1,95 @@
+import { Injectable, NotFoundException } from "@nestjs/common";
+import Decimal from "decimal.js";
+import { journalEventsRepository, riskCalculationsRepository, setupsRepository } from "@trading-copilot/database";
+import type {
+  CreateRiskCalculationInput,
+  CreateSetupInput,
+  SetupListQuery,
+  UpdateSetupStatusInput,
+} from "@trading-copilot/shared-types";
+import type { JournalEvent, RiskCalculation, Setup } from "@trading-copilot/trading-domain";
+
+/**
+ * Converts validated request strings to Date/Decimal here, at the service
+ * layer. NotFoundError/SetupTransitionError raised by
+ * setupsRepository.transitionSetupStatus (and NotFoundError raised by
+ * riskCalculationsRepository.createRiskCalculation) are deliberately left
+ * to propagate — the global DomainErrorFilter (see
+ * ../common/domain-error.filter.ts) translates them to 404/409 once, rather
+ * than every method here repeating a try/catch.
+ */
+@Injectable()
+export class SetupService {
+  create(input: CreateSetupInput): Promise<Setup> {
+    return setupsRepository.createSetup({
+      instrumentId: input.instrumentId,
+      strategyId: input.strategyId,
+      strategyVersionId: input.strategyVersionId,
+      marketSnapshotId: input.marketSnapshotId,
+      direction: input.direction,
+      source: input.source,
+      plannedEntry: new Decimal(input.plannedEntry),
+      plannedStop: new Decimal(input.plannedStop),
+      plannedTarget1: new Decimal(input.plannedTarget1),
+      plannedTarget2: input.plannedTarget2 ? new Decimal(input.plannedTarget2) : null,
+      decisionSummary: input.decisionSummary ?? null,
+      metadata: input.metadata,
+      expiresAt: input.expiresAt ? new Date(input.expiresAt) : null,
+    });
+  }
+
+  list(query: SetupListQuery): Promise<Setup[]> {
+    return setupsRepository.listSetups({
+      instrumentId: query.instrumentId,
+      strategyId: query.strategyId,
+      strategyVersionId: query.strategyVersionId,
+      status: query.status,
+      source: query.source,
+      direction: query.direction,
+      dateFrom: query.dateFrom ? new Date(query.dateFrom) : undefined,
+      dateTo: query.dateTo ? new Date(query.dateTo) : undefined,
+    });
+  }
+
+  async getById(id: string): Promise<Setup> {
+    const setup = await setupsRepository.getSetup(id);
+    if (!setup) {
+      throw new NotFoundException(`Setup ${id} not found`);
+    }
+    return setup;
+  }
+
+  updateStatus(id: string, input: UpdateSetupStatusInput): Promise<Setup> {
+    return setupsRepository.transitionSetupStatus(id, {
+      status: input.status,
+      decisionSummary: input.decisionSummary ?? null,
+    });
+  }
+
+  async getTimeline(id: string): Promise<JournalEvent[]> {
+    // 404s first so a timeline request for a nonexistent setup never
+    // silently returns an empty array indistinguishable from "no events yet".
+    await this.getById(id);
+    return journalEventsRepository.getSetupTimeline(id);
+  }
+
+  createRiskCalculation(id: string, input: CreateRiskCalculationInput): Promise<RiskCalculation> {
+    return riskCalculationsRepository.createRiskCalculation(id, {
+      accountEquity: new Decimal(input.accountEquity),
+      riskPercentage: new Decimal(input.riskPercentage),
+      slippageTicks: input.slippageTicks,
+    });
+  }
+
+  listRiskCalculations(id: string): Promise<RiskCalculation[]> {
+    return riskCalculationsRepository.listRiskCalculations(id);
+  }
+
+  async getLatestRiskCalculation(id: string): Promise<RiskCalculation> {
+    const calculation = await riskCalculationsRepository.getLatestRiskCalculation(id);
+    if (!calculation) {
+      throw new NotFoundException(`No risk calculation exists for setup ${id}`);
+    }
+    return calculation;
+  }
+}
