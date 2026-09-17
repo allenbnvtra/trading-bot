@@ -235,6 +235,14 @@ export interface NormalizedTrade {
   rMultiple: Decimal | null;
   mfe: Decimal | null;
   mae: Decimal | null;
+  /**
+   * null for a BACKTEST-sourced trade — packages/backtester applies slippage
+   * directly to fill prices rather than tracking it as a separate figure, so
+   * there is nothing meaningful to report here for that source. For a
+   * JOURNAL-sourced trade this is JournalTrade.actualSlippage, falling back
+   * to estimatedSlippage if the actual figure was never recorded.
+   */
+  slippage: Decimal | null;
 }
 
 /**
