@@ -200,6 +200,44 @@ export interface PostTradeAnalysis {
 }
 
 /**
+ * A trade, from either packages/analytics' point of view, in a shape common
+ * to both a Milestone 1 BacktestTrade and a Milestone 2 JournalTrade. This
+ * exists so cross-cutting analytics (grouping, winner/loser comparison) can
+ * treat both sources uniformly without either physically duplicating the
+ * other — see docs/trade-journal-design.md "Backtest -> journal
+ * compatibility." packages/database produces this shape (mapping both
+ * source tables); packages/analytics only ever consumes it, never queries a
+ * database directly.
+ *
+ * Only ever built from a *closed* trade: a BacktestTrade (always closed by
+ * construction) or a JournalTrade with status CLOSED. Planned/open/skipped
+ * JournalTrade rows have no realized P&L and are never normalized.
+ */
+export interface NormalizedTrade {
+  source: "BACKTEST" | "JOURNAL";
+  id: string;
+  strategyId: string;
+  strategyVersionId: string;
+  instrumentId: string;
+  direction: Direction;
+  executionMode: ExecutionMode;
+  entryTimestamp: Date;
+  exitTimestamp: Date;
+  entryPrice: Decimal;
+  exitPrice: Decimal;
+  quantity: number;
+  grossPnl: Decimal;
+  fees: Decimal;
+  netPnl: Decimal;
+  /** null only for a JOURNAL-sourced trade whose JournalTrade.plannedRisk was never set. */
+  riskAmount: Decimal | null;
+  /** null whenever riskAmount is null (rMultiple is undefined without a risk baseline). */
+  rMultiple: Decimal | null;
+  mfe: Decimal | null;
+  mae: Decimal | null;
+}
+
+/**
  * Screenshot metadata only — the image itself lives in object storage (see
  * docs/screenshot-design.md), never as a blob in Postgres. Schema
  * foundation only in Milestone 2; no renderer/capture pipeline exists yet.
