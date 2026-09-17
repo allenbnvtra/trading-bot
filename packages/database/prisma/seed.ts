@@ -16,9 +16,14 @@
  * it again rather than ever updating it.
  */
 import { Readable } from "node:stream";
+import { Decimal } from "decimal.js";
 import type { AssetClass } from "@trading-copilot/shared-types";
 import { prisma } from "../src/client";
 import { importCandlesFromStream } from "../src/candle-importer";
+import * as marketSnapshotsRepository from "../src/repositories/market-snapshots";
+import * as setupsRepository from "../src/repositories/setups";
+import * as riskCalculationsRepository from "../src/repositories/risk-calculations";
+import * as journalTradesRepository from "../src/repositories/journal-trades";
 
 // ---------------------------------------------------------------------------
 // Deterministic PRNG (mulberry32) — never Math.random(). Same seed always
@@ -264,6 +269,121 @@ async function seedCandles(instrumentId: string): Promise<void> {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Milestone 2 demo: one complete Setup -> RiskCalculation -> JournalTrade
+// lifecycle, for dashboard illustration. Uses the same repository functions
+// apps/api will use (not raw Prisma writes), so journal event emission is
+// exercised by the seed itself, exactly like the candle importer above.
+// Idempotent: guarded by a distinctive metadata tag on the Setup row.
+// ---------------------------------------------------------------------------
+const DEMO_SEED_TAG = "milestone2-demo-v1";
+
+async function seedDemoJournalLifecycle(
+  instrumentId: string,
+  strategyId: string,
+  strategyVersionId: string,
+): Promise<void> {
+  const existing = await prisma.setup.findFirst({
+    where: { instrumentId, strategyVersionId, source: "MANUAL_TEST" },
+  });
+  if (existing) {
+    console.log(`  demo journal lifecycle already exists (setup ${existing.id})`);
+    return;
+  }
+
+  const snapshotTimestamp = new Date("2024-02-03T08:00:00.000Z");
+  const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+    instrumentId,
+    timestamp: snapshotTimestamp,
+    timeframe: "1h",
+    // Deliberately a handful of representative fields, not every field —
+    // MarketSnapshot's remaining fields (support/resistance, VWAP, etc.) are
+    // legitimately optional and this demo doesn't need all of them.
+    trend1h: "UP",
+    trend4h: "UP",
+    atr: new Decimal("18.5"),
+    volume: new Decimal("640"),
+    session: "RTH",
+    timeOfDay: "MORNING",
+    dayOfWeek: "SATURDAY",
+    marketRegime: "TRENDING",
+    metadata: { seedTag: DEMO_SEED_TAG },
+  });
+  console.log(`  created demo MarketSnapshot (${snapshot.id})`);
+
+  const plannedEntry = new Decimal("5100");
+  const plannedStop = new Decimal("5088");
+  const plannedTarget1 = new Decimal("5124"); // 2R given a 12-point stop
+
+  let setup = await setupsRepository.createSetup({
+    instrumentId,
+    strategyId,
+    strategyVersionId,
+    marketSnapshotId: snapshot.id,
+    direction: "LONG",
+    source: "MANUAL_TEST",
+    plannedEntry,
+    plannedStop,
+    plannedTarget1,
+    decisionSummary: "Demo setup for Milestone 2 dashboard illustration (seed data, not a real trade).",
+    metadata: { seedTag: DEMO_SEED_TAG },
+  });
+  console.log(`  created demo Setup (${setup.id}), status=${setup.status}`);
+
+  setup = await setupsRepository.transitionSetupStatus(setup.id, { status: "PREPARE" });
+  setup = await setupsRepository.transitionSetupStatus(setup.id, {
+    status: "READY",
+    decisionSummary: "Pullback confirmed against the 1h/4h uptrend; risk calculated below.",
+  });
+  console.log(`  transitioned demo Setup WATCH -> PREPARE -> READY (status=${setup.status})`);
+
+  const riskCalculation = await riskCalculationsRepository.createRiskCalculation(setup.id, {
+    accountEquity: new Decimal("100000"),
+    riskPercentage: new Decimal("1"),
+    slippageTicks: 2,
+  });
+  console.log(
+    `  created demo RiskCalculation (${riskCalculation.id}): quantity=${riskCalculation.calculatedQuantity} totalRisk=${riskCalculation.estimatedTotalRisk.toString()}`,
+  );
+
+  let trade = await journalTradesRepository.createJournalTrade({
+    setupId: setup.id,
+    instrumentId,
+    strategyId,
+    strategyVersionId,
+    direction: "LONG",
+    plannedEntry,
+    plannedStop,
+    plannedTarget1,
+    plannedRisk: riskCalculation.estimatedTotalRisk,
+    executionMode: "PAPER",
+    entryNotes: "Paper trade for Milestone 2 dashboard demo.",
+  });
+  console.log(`  created demo JournalTrade (${trade.id}), status=${trade.status}`);
+
+  trade = await journalTradesRepository.recordJournalTradeEntry(trade.id, {
+    actualEntry: new Decimal("5100.25"), // one tick of slippage over the planned entry
+    entryTimestamp: new Date("2024-02-03T09:00:00.000Z"),
+    quantity: riskCalculation.calculatedQuantity,
+    estimatedFees: riskCalculation.estimatedCommission,
+    estimatedSlippage: riskCalculation.estimatedSlippage,
+  });
+  console.log(`  recorded demo JournalTrade entry, status=${trade.status}`);
+
+  trade = await journalTradesRepository.closeJournalTrade(trade.id, {
+    actualExit: new Decimal("5123.75"), // one tick of slippage under the planned target
+    exitTimestamp: new Date("2024-02-03T15:00:00.000Z"),
+    actualFees: riskCalculation.estimatedCommission,
+    actualSlippage: riskCalculation.estimatedSlippage,
+    mfe: new Decimal("30"),
+    mae: new Decimal("5"),
+    exitNotes: "Closed near target1 after a clean pullback continuation.",
+  });
+  console.log(
+    `  closed demo JournalTrade (${trade.id}): netPnl=${trade.netPnl?.toString()} rMultiple=${trade.rMultiple?.toString()}`,
+  );
+}
+
 async function main(): Promise<void> {
   console.log("Seeding instruments...");
   const instrumentIds: Record<AssetClass, string> = { FUTURES: "", FOREX: "", CRYPTO: "", STOCK: "" };
@@ -273,10 +393,13 @@ async function main(): Promise<void> {
 
   console.log("Seeding strategy...");
   const strategyId = await findOrCreateStrategy();
-  await findOrCreateStrategyVersion(strategyId);
+  const strategyVersionId = await findOrCreateStrategyVersion(strategyId);
 
   console.log("Seeding SYNTHETIC TEST DATA candles (NOT REAL MARKET DATA) for the futures fixture...");
   await seedCandles(instrumentIds.FUTURES);
+
+  console.log("Seeding Milestone 2 demo journal lifecycle...");
+  await seedDemoJournalLifecycle(instrumentIds.FUTURES, strategyId, strategyVersionId);
 
   console.log("Seed complete.");
 }

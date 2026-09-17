@@ -216,6 +216,22 @@ importers:
         specifier: ^2.1.4
         version: 2.1.9(@types/node@20.19.43)(jsdom@25.0.1)
 
+  packages/analytics:
+    dependencies:
+      '@trading-copilot/trading-domain':
+        specifier: workspace:*
+        version: link:../trading-domain
+      decimal.js:
+        specifier: ^10.4.3
+        version: 10.6.0
+    devDependencies:
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.4
+        version: 2.1.9(@types/node@20.19.43)(jsdom@25.0.1)
+
   packages/backtester:
     dependencies:
       '@trading-copilot/risk-engine':
@@ -246,6 +262,9 @@ importers:
       '@prisma/client':
         specifier: ^6.19.3
         version: 6.19.3(prisma@6.19.3(typescript@5.9.3))(typescript@5.9.3)
+      '@trading-copilot/risk-engine':
+        specifier: workspace:*
+        version: link:../risk-engine
       '@trading-copilot/shared-types':
         specifier: workspace:*
         version: link:../shared-types

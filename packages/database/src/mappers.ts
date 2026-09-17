@@ -6,16 +6,33 @@ import type {
   BacktestTrade,
   Candle,
   Instrument,
+  JournalEvent,
+  JournalTrade,
+  MarketSnapshot,
+  PostTradeAnalysis,
+  RiskCalculation,
+  Setup,
   Strategy,
   StrategyVersion,
+  TradeScreenshot,
 } from "@trading-copilot/trading-domain";
 import type {
   AssetClass,
   BacktestStatus,
   Direction,
+  ExecutionMode,
+  JournalEntityType,
+  JournalEventType,
+  JournalTradeStatus,
+  LossCategory,
+  PostTradeOutcome,
+  ScreenshotType,
+  SetupSource,
+  SetupStatus,
   StrategyVersionStatus,
   Timeframe,
   TradeExitReason,
+  TradeSource,
 } from "@trading-copilot/shared-types";
 
 /**
@@ -343,5 +360,320 @@ export function mapBacktestMetrics(row: PrismaBacktestMetricsRow): BacktestMetri
     maximumConsecutiveWins: row.maximumConsecutiveWins,
     maximumConsecutiveLosses: row.maximumConsecutiveLosses,
     expectancy: toDomainDecimal(row.expectancy),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 2 — MarketSnapshot / Setup / RiskCalculation / JournalTrade /
+// JournalEvent / PostTradeAnalysis / TradeScreenshot
+// ---------------------------------------------------------------------------
+
+export interface PrismaMarketSnapshotRow {
+  id: string;
+  instrumentId: string;
+  timestamp: Date;
+  timeframe: string;
+  windowCandleCount: number | null;
+  windowStartTimestamp: Date | null;
+  windowEndTimestamp: Date | null;
+  trend1m: string | null;
+  trend5m: string | null;
+  trend15m: string | null;
+  trend1h: string | null;
+  trend4h: string | null;
+  trend1d: string | null;
+  atr: Decimalish | null;
+  atrPercentile: Decimalish | null;
+  volume: Decimalish | null;
+  volumePercentile: Decimalish | null;
+  vwap: Decimalish | null;
+  vwapDistance: Decimalish | null;
+  nearestSupport: Decimalish | null;
+  distanceToSupport: Decimalish | null;
+  nearestResistance: Decimalish | null;
+  distanceToResistance: Decimalish | null;
+  session: string | null;
+  timeOfDay: string | null;
+  dayOfWeek: string | null;
+  marketRegime: string | null;
+  metadata: unknown;
+  createdAt: Date;
+}
+
+export function mapMarketSnapshot(row: PrismaMarketSnapshotRow): MarketSnapshot {
+  return {
+    id: row.id,
+    instrumentId: row.instrumentId,
+    timestamp: row.timestamp,
+    timeframe: row.timeframe as Timeframe,
+    windowCandleCount: row.windowCandleCount,
+    windowStartTimestamp: row.windowStartTimestamp,
+    windowEndTimestamp: row.windowEndTimestamp,
+    trend1m: row.trend1m,
+    trend5m: row.trend5m,
+    trend15m: row.trend15m,
+    trend1h: row.trend1h,
+    trend4h: row.trend4h,
+    trend1d: row.trend1d,
+    atr: toNullableDomainDecimal(row.atr),
+    atrPercentile: toNullableDomainDecimal(row.atrPercentile),
+    volume: toNullableDomainDecimal(row.volume),
+    volumePercentile: toNullableDomainDecimal(row.volumePercentile),
+    vwap: toNullableDomainDecimal(row.vwap),
+    vwapDistance: toNullableDomainDecimal(row.vwapDistance),
+    nearestSupport: toNullableDomainDecimal(row.nearestSupport),
+    distanceToSupport: toNullableDomainDecimal(row.distanceToSupport),
+    nearestResistance: toNullableDomainDecimal(row.nearestResistance),
+    distanceToResistance: toNullableDomainDecimal(row.distanceToResistance),
+    session: row.session,
+    timeOfDay: row.timeOfDay,
+    dayOfWeek: row.dayOfWeek,
+    marketRegime: row.marketRegime,
+    metadata: toRecord(row.metadata),
+    createdAt: row.createdAt,
+  };
+}
+
+export interface PrismaSetupRow {
+  id: string;
+  instrumentId: string;
+  strategyId: string;
+  strategyVersionId: string;
+  marketSnapshotId: string;
+  direction: Direction;
+  source: SetupSource;
+  plannedEntry: Decimalish;
+  plannedStop: Decimalish;
+  plannedTarget1: Decimalish;
+  plannedTarget2: Decimalish | null;
+  status: SetupStatus;
+  decisionSummary: string | null;
+  metadata: unknown;
+  createdAt: Date;
+  updatedAt: Date;
+  expiresAt: Date | null;
+}
+
+export function mapSetup(row: PrismaSetupRow): Setup {
+  return {
+    id: row.id,
+    instrumentId: row.instrumentId,
+    strategyId: row.strategyId,
+    strategyVersionId: row.strategyVersionId,
+    marketSnapshotId: row.marketSnapshotId,
+    direction: row.direction,
+    source: row.source,
+    plannedEntry: toDomainDecimal(row.plannedEntry),
+    plannedStop: toDomainDecimal(row.plannedStop),
+    plannedTarget1: toDomainDecimal(row.plannedTarget1),
+    plannedTarget2: toNullableDomainDecimal(row.plannedTarget2),
+    status: row.status,
+    decisionSummary: row.decisionSummary,
+    metadata: toRecord(row.metadata),
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    expiresAt: row.expiresAt,
+  };
+}
+
+export interface PrismaRiskCalculationRow {
+  id: string;
+  setupId: string;
+  accountEquity: Decimalish;
+  riskPercentage: Decimalish;
+  riskBudget: Decimalish;
+  entryPrice: Decimalish;
+  stopPrice: Decimalish;
+  stopDistancePoints: Decimalish;
+  stopDistanceTicks: Decimalish;
+  pointValue: Decimalish;
+  tickValue: Decimalish;
+  estimatedCommission: Decimalish;
+  estimatedSlippage: Decimalish;
+  riskPerUnit: Decimalish;
+  calculatedQuantity: number;
+  estimatedTotalRisk: Decimalish;
+  riskReward: Decimalish;
+  createdAt: Date;
+}
+
+export function mapRiskCalculation(row: PrismaRiskCalculationRow): RiskCalculation {
+  return {
+    id: row.id,
+    setupId: row.setupId,
+    accountEquity: toDomainDecimal(row.accountEquity),
+    riskPercentage: toDomainDecimal(row.riskPercentage),
+    riskBudget: toDomainDecimal(row.riskBudget),
+    entryPrice: toDomainDecimal(row.entryPrice),
+    stopPrice: toDomainDecimal(row.stopPrice),
+    stopDistancePoints: toDomainDecimal(row.stopDistancePoints),
+    stopDistanceTicks: toDomainDecimal(row.stopDistanceTicks),
+    pointValue: toDomainDecimal(row.pointValue),
+    tickValue: toDomainDecimal(row.tickValue),
+    estimatedCommission: toDomainDecimal(row.estimatedCommission),
+    estimatedSlippage: toDomainDecimal(row.estimatedSlippage),
+    riskPerUnit: toDomainDecimal(row.riskPerUnit),
+    calculatedQuantity: row.calculatedQuantity,
+    estimatedTotalRisk: toDomainDecimal(row.estimatedTotalRisk),
+    riskReward: toDomainDecimal(row.riskReward),
+    createdAt: row.createdAt,
+  };
+}
+
+export interface PrismaJournalTradeRow {
+  id: string;
+  setupId: string | null;
+  instrumentId: string;
+  strategyId: string;
+  strategyVersionId: string;
+  direction: Direction;
+  plannedEntry: Decimalish;
+  plannedStop: Decimalish;
+  plannedTarget1: Decimalish | null;
+  plannedTarget2: Decimalish | null;
+  actualEntry: Decimalish | null;
+  actualExit: Decimalish | null;
+  entryTimestamp: Date | null;
+  exitTimestamp: Date | null;
+  quantity: number | null;
+  plannedRisk: Decimalish | null;
+  estimatedFees: Decimalish | null;
+  actualFees: Decimalish | null;
+  estimatedSlippage: Decimalish | null;
+  actualSlippage: Decimalish | null;
+  grossPnl: Decimalish | null;
+  netPnl: Decimalish | null;
+  rMultiple: Decimalish | null;
+  mfe: Decimalish | null;
+  mae: Decimalish | null;
+  executionMode: ExecutionMode;
+  status: JournalTradeStatus;
+  entryNotes: string | null;
+  exitNotes: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export function mapJournalTrade(row: PrismaJournalTradeRow): JournalTrade {
+  return {
+    id: row.id,
+    setupId: row.setupId,
+    instrumentId: row.instrumentId,
+    strategyId: row.strategyId,
+    strategyVersionId: row.strategyVersionId,
+    direction: row.direction,
+    plannedEntry: toDomainDecimal(row.plannedEntry),
+    plannedStop: toDomainDecimal(row.plannedStop),
+    plannedTarget1: toNullableDomainDecimal(row.plannedTarget1),
+    plannedTarget2: toNullableDomainDecimal(row.plannedTarget2),
+    actualEntry: toNullableDomainDecimal(row.actualEntry),
+    actualExit: toNullableDomainDecimal(row.actualExit),
+    entryTimestamp: row.entryTimestamp,
+    exitTimestamp: row.exitTimestamp,
+    quantity: row.quantity,
+    plannedRisk: toNullableDomainDecimal(row.plannedRisk),
+    estimatedFees: toNullableDomainDecimal(row.estimatedFees),
+    actualFees: toNullableDomainDecimal(row.actualFees),
+    estimatedSlippage: toNullableDomainDecimal(row.estimatedSlippage),
+    actualSlippage: toNullableDomainDecimal(row.actualSlippage),
+    grossPnl: toNullableDomainDecimal(row.grossPnl),
+    netPnl: toNullableDomainDecimal(row.netPnl),
+    rMultiple: toNullableDomainDecimal(row.rMultiple),
+    mfe: toNullableDomainDecimal(row.mfe),
+    mae: toNullableDomainDecimal(row.mae),
+    executionMode: row.executionMode,
+    status: row.status,
+    entryNotes: row.entryNotes,
+    exitNotes: row.exitNotes,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+export interface PrismaJournalEventRow {
+  id: string;
+  eventType: JournalEventType;
+  timestamp: Date;
+  entityType: JournalEntityType;
+  entityId: string;
+  correlationId: string | null;
+  instrumentId: string | null;
+  strategyId: string | null;
+  strategyVersionId: string | null;
+  metadata: unknown;
+}
+
+export function mapJournalEvent(row: PrismaJournalEventRow): JournalEvent {
+  return {
+    id: row.id,
+    eventType: row.eventType,
+    timestamp: row.timestamp,
+    entityType: row.entityType,
+    entityId: row.entityId,
+    correlationId: row.correlationId,
+    instrumentId: row.instrumentId,
+    strategyId: row.strategyId,
+    strategyVersionId: row.strategyVersionId,
+    metadata: toRecord(row.metadata),
+  };
+}
+
+export interface PrismaPostTradeAnalysisRow {
+  id: string;
+  tradeId: string;
+  tradeSource: TradeSource;
+  outcome: PostTradeOutcome;
+  primaryCause: LossCategory | null;
+  contributingFactors: LossCategory[];
+  confidence: Decimalish | null;
+  evidence: unknown;
+  researchHypotheses: string[];
+  createdAt: Date;
+}
+
+export function mapPostTradeAnalysis(row: PrismaPostTradeAnalysisRow): PostTradeAnalysis {
+  return {
+    id: row.id,
+    tradeId: row.tradeId,
+    tradeSource: row.tradeSource,
+    outcome: row.outcome,
+    primaryCause: row.primaryCause,
+    contributingFactors: row.contributingFactors,
+    confidence: toNullableDomainDecimal(row.confidence),
+    evidence: toRecord(row.evidence),
+    researchHypotheses: row.researchHypotheses,
+    createdAt: row.createdAt,
+  };
+}
+
+export interface PrismaTradeScreenshotRow {
+  id: string;
+  setupId: string | null;
+  tradeId: string | null;
+  tradeSource: TradeSource | null;
+  type: ScreenshotType;
+  storageKey: string;
+  mimeType: string;
+  width: number | null;
+  height: number | null;
+  marketSnapshotId: string | null;
+  chartConfigVersion: string | null;
+  createdAt: Date;
+}
+
+export function mapTradeScreenshot(row: PrismaTradeScreenshotRow): TradeScreenshot {
+  return {
+    id: row.id,
+    setupId: row.setupId,
+    tradeId: row.tradeId,
+    tradeSource: row.tradeSource,
+    type: row.type,
+    storageKey: row.storageKey,
+    mimeType: row.mimeType,
+    width: row.width,
+    height: row.height,
+    marketSnapshotId: row.marketSnapshotId,
+    chartConfigVersion: row.chartConfigVersion,
+    createdAt: row.createdAt,
   };
 }
