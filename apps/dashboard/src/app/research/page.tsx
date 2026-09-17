@@ -2,6 +2,7 @@ import { ApiError, getBacktests, getInstruments } from "@/lib/api";
 import { getAllStrategyVersions } from "@/lib/strategy-versions";
 import BacktestList, { type BacktestListLabels } from "@/components/BacktestList";
 import CreateBacktestForm from "@/components/CreateBacktestForm";
+import ResearchDisclaimer from "@/components/ResearchDisclaimer";
 
 export default async function ResearchPage() {
   let loadError: string | null = null;
@@ -34,6 +35,8 @@ export default async function ResearchPage() {
         <h1>Research</h1>
         <p>Run backtests and inspect strategy behavior and individual trades.</p>
       </div>
+
+      <ResearchDisclaimer />
 
       {loadError && <div className="error-banner">{loadError}</div>}
 

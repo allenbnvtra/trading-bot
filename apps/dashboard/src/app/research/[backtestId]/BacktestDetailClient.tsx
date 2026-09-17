@@ -6,6 +6,7 @@ import { formatDate, formatDateTime, formatDecimal, formatInteger } from "@/lib/
 import { BacktestStatusBadge } from "@/components/StatusBadge";
 import StatGrid from "@/components/StatGrid";
 import TradesTable from "@/components/TradesTable";
+import ResearchDisclaimer from "@/components/ResearchDisclaimer";
 
 const POLL_INTERVAL_MS = 2000;
 const TERMINAL_STATUSES = new Set(["COMPLETED", "FAILED"]);
@@ -134,6 +135,7 @@ export default function BacktestDetailClient({
       {backtest.status === "COMPLETED" && backtest.metrics && (
         <div className="card">
           <h2>Metrics</h2>
+          <ResearchDisclaimer />
           <StatGrid metrics={backtest.metrics} />
         </div>
       )}

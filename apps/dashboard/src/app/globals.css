@@ -376,6 +376,17 @@ button.btn--secondary {
   white-space: pre-wrap;
 }
 
+.note-banner {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px dashed var(--color-border);
+  color: var(--color-text-muted);
+  border-radius: 8px;
+  padding: 10px 16px;
+  margin-bottom: 16px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
 .empty-state {
   color: var(--color-text-muted);
   padding: 32px 16px;

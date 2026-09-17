@@ -45,4 +45,37 @@ describe("createBacktestRequestSchema", () => {
     const result = createBacktestRequestSchema.safeParse({ ...validRequest, startDate: "yesterday" });
     expect(result.success).toBe(false);
   });
+
+  it("rejects a zero initialBalance", () => {
+    const result = createBacktestRequestSchema.safeParse({ ...validRequest, initialBalance: "0" });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects a zero initialBalance written as \"0.00\"", () => {
+    const result = createBacktestRequestSchema.safeParse({ ...validRequest, initialBalance: "0.00" });
+    expect(result.success).toBe(false);
+  });
+
+  it("accepts a zero riskPercentage (legitimately means 'risk nothing')", () => {
+    const result = createBacktestRequestSchema.safeParse({ ...validRequest, riskPercentage: "0" });
+    expect(result.success).toBe(true);
+  });
+
+  it("rejects a startDate that is not strictly before endDate", () => {
+    const result = createBacktestRequestSchema.safeParse({
+      ...validRequest,
+      startDate: "2024-06-01T00:00:00.000Z",
+      endDate: "2024-06-01T00:00:00.000Z",
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it("rejects an endDate before startDate", () => {
+    const result = createBacktestRequestSchema.safeParse({
+      ...validRequest,
+      startDate: "2024-06-01T00:00:00.000Z",
+      endDate: "2024-01-01T00:00:00.000Z",
+    });
+    expect(result.success).toBe(false);
+  });
 });

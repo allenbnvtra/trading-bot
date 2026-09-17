@@ -35,6 +35,17 @@ describe("createInstrumentSchema", () => {
     expect(result.success).toBe(false);
   });
 
+  it("rejects a zero tickSize, tickValue, or pointValue", () => {
+    expect(createInstrumentSchema.safeParse({ ...validInstrument, tickSize: "0" }).success).toBe(false);
+    expect(createInstrumentSchema.safeParse({ ...validInstrument, tickValue: "0" }).success).toBe(false);
+    expect(createInstrumentSchema.safeParse({ ...validInstrument, pointValue: "0.00" }).success).toBe(false);
+  });
+
+  it("accepts a zero commissionPerContract (legitimately commission-free)", () => {
+    const result = createInstrumentSchema.safeParse({ ...validInstrument, commissionPerContract: "0" });
+    expect(result.success).toBe(true);
+  });
+
   it("defaults sessionConfiguration to an empty object when omitted", () => {
     const { sessionConfiguration: _sessionConfiguration, ...withoutSession } = validInstrument;
     const result = createInstrumentSchema.safeParse(withoutSession);

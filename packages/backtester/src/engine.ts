@@ -105,11 +105,14 @@ export function runBacktest(input: BacktestRunInput): BacktestRunResult {
   const trades: Array<Omit<BacktestTrade, "id" | "backtestId">> = [];
   let skippedSignalCount = 0;
 
-  // A new signal is only eligible once the previous trade has fully closed:
-  // signals whose index is <= the prior trade's exit index would require
-  // entering (index+1) at or before that exit candle, overlapping the
-  // still-open position. See docs/backtesting-assumptions.md "one position
-  // at a time".
+  // A new signal is only eligible once the previous trade has fully closed.
+  // Signals up to and including the prior trade's exit index are blocked —
+  // this is deliberately conservative by one extra candle beyond the
+  // minimum necessary (a signal exactly at the exit index would technically
+  // enter one candle after the position closed, at index+1, so it would not
+  // literally overlap), so that a position closing and a new signal forming
+  // on the very same candle are never treated as back-to-back in the same
+  // bar. See docs/backtesting-assumptions.md "one position at a time".
   let blockedUpToIndex = -1;
 
   for (const signal of signals) {
