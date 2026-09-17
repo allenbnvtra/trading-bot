@@ -1,53 +1,98 @@
-# Trade Journal Design (Future — Milestone 2+)
+# Trade Journal Design
 
-The journal is a core product capability, not an afterthought. Its purpose: make every decision the system ever makes — approved, rejected, invalidated, expired, skipped, executed — measurable after the fact from stored data, never from AI memory. Milestone 1 does not implement these tables; this document exists so Milestone 2 has a stable design to build against and so schema decisions made now (in `packages/database`) don't foreclose it.
+The journal is a core product capability, not an afterthought. Its purpose: make every decision the system ever makes — approved, rejected, invalidated, expired, skipped, executed — measurable after the fact from stored data, never from AI memory.
+
+Milestone 1 shipped the deterministic backtester (`Instrument`, `Candle`, `Strategy`, `StrategyVersion`, `Backtest`, `BacktestTrade`, `BacktestMetrics`). **Milestone 2 (this document, now implemented) adds the journal/analytics foundation on top of it**: `MarketSnapshot`, `Setup`, `RiskCalculation`, `JournalTrade`, `JournalEvent`, `PostTradeAnalysis`, and `TradeScreenshot` (schema only). Runtime AI agents, TradingView ingestion, and screenshot rendering remain future milestones — see `docs/roadmap.md`.
 
 ## Decision-time integrity
 
-Pre-trade information must never be contaminated by post-trade information:
+Pre-trade information is never contaminated by post-trade information:
 
-**Pre-trade** (immutable once recorded): market snapshot, strategy output, agent outputs, risk calculation, system decision.
+**Pre-trade** (immutable once recorded): `MarketSnapshot`, the `Setup` it backs, each `RiskCalculation`. None of these have an update path in `packages/database` — a `Setup` that needs fresher context gets a *new* `MarketSnapshot`/`RiskCalculation` row, never a mutation of an old one. A `Setup`'s only mutable surface is its state-machine fields (`status`, `decisionSummary`, `updatedAt`, `expiresAt`).
 
-**Post-trade** (recorded later, separately): actual execution, actual exit, P&L, MFE, MAE, winner/loss analysis.
-
-These live in different record types so a query for "what did we know when we decided" can never accidentally pull in information from after the fact.
+**Post-trade** (recorded later, separately): `JournalTrade`'s actual-entry/actual-exit/P&L/MFE/MAE fields (set once, at `recordJournalTradeEntry`/`closeJournalTrade` time), and `PostTradeAnalysis`.
 
 ## Market snapshots
 
-An immutable `MarketSnapshot` captures what the market looked like at a moment in time: recent OHLCV context, multi-timeframe trend (1m/5m/15m/1h/4h/1d), ATR and its percentile, volume and its percentile, VWAP and distance to it, nearest support/resistance and distance, opening range, previous-day high/low, session, time of day, day of week, market regime, and proximity to known economic events. See `packages/trading-domain/src/future.ts` for the draft interface.
+`MarketSnapshot` captures what the market looked like at a moment in time: an instrument/timeframe, a candle-window reference (`windowCandleCount`, `windowStartTimestamp`, `windowEndTimestamp`), per-timeframe trend labels (`trend1m`…`trend1d`, free-form strings for now), ATR and its percentile, volume and its percentile, VWAP and distance to it, nearest support/resistance and distance, session/time-of-day/day-of-week, a free-form `marketRegime` (the formal `RegimeAgent` taxonomy is Milestone 7), and a `metadata` JSON catch-all. Not every field is populated in Milestone 2 — the schema is intentionally wider than any single caller needs today.
+
+## The Setup lifecycle
+
+```
+WATCH ──▶ PREPARE ──▶ READY ──▶ (human/agent takes or skips it)
+  │           │          │
+  └────────┬──┴──────────┘
+           ▼
+  REJECTED / INVALIDATED / EXPIRED   (terminal — no further transitions)
+```
+
+Exact matrix enforced by `packages/database`'s `transitionSetupStatus` (see `isAllowedSetupTransition` in `packages/database/src/repositories/setups.ts`): `WATCH → {PREPARE, READY, REJECTED, INVALIDATED, EXPIRED}`, `PREPARE → {READY, REJECTED, INVALIDATED, EXPIRED}`, `READY → {REJECTED, INVALIDATED, EXPIRED}`. No backward transitions, no same-status no-op, no transition out of a terminal status — every violation throws a typed `SetupTransitionError`, translated to HTTP 409 by `apps/api`.
+
+A `Setup` can originate from `BACKTEST` (correlated to an existing deterministic result), `MANUAL_TEST` (a human exercising the journal), or `SYSTEM` (an internal process) — see `SetupSource`. `TRADINGVIEW` arrives in Milestone 3.
 
 ## Journal events (append-only)
 
-An append-only event log, not a replacement for relational business tables. Event types: `SETUP_CREATED`, `STRATEGY_EVALUATED`, `AGENT_STARTED`/`AGENT_COMPLETED`/`AGENT_FAILED`, `RISK_CALCULATED`, `SETUP_APPROVED`/`SETUP_REJECTED`/`SETUP_INVALIDATED`/`SETUP_EXPIRED`, `TRADE_READY`, `TRADE_EXECUTED`/`TRADE_SKIPPED`, `TRADE_UPDATED`/`TRADE_CLOSED`, `POST_TRADE_ANALYSIS_STARTED`/`POST_TRADE_ANALYSIS_COMPLETED`, `RESEARCH_HYPOTHESIS_CREATED`, `STRATEGY_VERSION_PROPOSED`/`STRATEGY_VERSION_APPROVED`/`STRATEGY_PAUSED`. Fields: `id`, `eventType`, `timestamp`, `entityType`, `entityId`, `correlationId`, `instrumentId`, `strategyId`, `strategyVersionId`, `metadata` (JSON).
+An append-only event log, not a replacement for the relational tables above — `packages/database`'s `journal-events.ts` repository exposes only `createJournalEvent`/`listJournalEvents`/`getSetupTimeline`, never an update or delete. The Milestone 2 event vocabulary (`JournalEventType`): `SETUP_CREATED`, `STRATEGY_EVALUATED`, `RISK_CALCULATED`, `SETUP_APPROVED`/`SETUP_REJECTED`/`SETUP_INVALIDATED`/`SETUP_EXPIRED`, `TRADE_READY`, `TRADE_EXECUTED`, `TRADE_SKIPPED`, `TRADE_CLOSED`, `POST_TRADE_ANALYSIS_CREATED`, `STRATEGY_VERSION_PROPOSED`. Later milestones add `AGENT_STARTED`/`AGENT_COMPLETED`/`AGENT_FAILED`, `RESEARCH_HYPOTHESIS_CREATED`, `STRATEGY_VERSION_APPROVED`, `STRATEGY_PAUSED`, etc. via a small additive migration once the runtime agents that emit them exist — they are deliberately not pre-added now.
 
-## Agent execution audit
+**Timeline reconstruction**: every event in a `Setup`'s lifecycle — including the events emitted by a `JournalTrade` created from it — shares `correlationId = setup.id`. `getSetupTimeline(setupId)` is therefore a single indexed query (`WHERE correlationId = ? ORDER BY timestamp ASC`), not a multi-table join across `Setup`/`RiskCalculation`/`JournalTrade`. Exact emission mapping:
 
-Every future runtime AI agent call is recorded: `id`, `setupId`, `tradeId`, `agentType`, `agentVersion`, `provider`, `model`, `promptTemplateVersion`, `startedAt`/`completedAt`/`latencyMs`, `status`, `structuredInput`/`structuredOutput` (JSON), `decision`, `confidence`, `reasoningSummary`, `inputTokens`/`outputTokens`/`estimatedCost`, `errorCode`/`errorMessage`. Hidden chain-of-thought is never stored — only structured output and a concise audit summary.
+| Action | Event(s) emitted |
+|---|---|
+| `createSetup` | `SETUP_CREATED`, plus `STRATEGY_EVALUATED` iff `source === "BACKTEST"` |
+| `transitionSetupStatus` → `PREPARE` | *(none — no matching type in the fixed vocabulary; a deliberate, documented gap)* |
+| `transitionSetupStatus` → `READY` | `SETUP_APPROVED` |
+| `transitionSetupStatus` → `REJECTED` / `INVALIDATED` / `EXPIRED` | `SETUP_REJECTED` / `SETUP_INVALIDATED` / `SETUP_EXPIRED` |
+| `createRiskCalculation` | `RISK_CALCULATED` |
+| `createJournalTrade` (`executionMode: SKIPPED`) | `TRADE_SKIPPED` |
+| `createJournalTrade` (`executionMode: PAPER`/`MANUAL_LIVE`) | `TRADE_READY` |
+| `recordJournalTradeEntry` | `TRADE_EXECUTED` |
+| `closeJournalTrade` | `TRADE_CLOSED` |
+| `createPostTradeAnalysis` | `POST_TRADE_ANALYSIS_CREATED` |
 
-## Manual trades
+Every state change and its accompanying event are written inside one `prisma.$transaction` — an event is never recorded without its matching change, or vice versa.
 
-What the human actually did, recorded after the fact: planned entry/stop/targets vs. actual entry/exit, timestamps, planned risk, quantity, tick/point value, estimated vs. actual fees and slippage, gross/net P&L, R multiple, MFE/MAE, `executionMode` (`PAPER` / `MANUAL_LIVE` / `SKIPPED`), entry/exit notes. No automated broker execution ever writes this table — it is a record of a human action.
+## Risk calculations
+
+Every `RiskCalculation` is produced by calling `packages/risk-engine` directly (`calculateStopDistancePoints`/`Ticks`, `calculateRiskBudget`, `calculateRiskPerContract`, `calculatePositionSize`, `calculateRiskReward`) against a `Setup`'s planned entry/stop/target and its `Instrument`'s tick/point/commission values — never computed independently in a controller or the dashboard. `calculatedQuantity: 0` is a valid, persisted outcome (the account can't afford one contract at this risk), not an error.
+
+## Journal trades
+
+`JournalTrade` is **distinct from Milestone 1's `BacktestTrade` by design**, not an oversight: a `BacktestTrade` is the deterministic result of `packages/backtester` running historical candles through a strategy version; a `JournalTrade` is a record of a real (`PAPER`/`MANUAL_LIVE`) trade or a deliberately `SKIPPED` one. Neither table is copied into the other — see "Backtest → journal compatibility" below. `executionMode: "BACKTEST"` exists in the shared `ExecutionMode` enum only for the normalized analytics view (below); no literal `JournalTrade` row is ever created with it.
+
+Lifecycle: `PLANNED` (created, not yet entered) → `OPEN` (`recordJournalTradeEntry`) → `CLOSED` (`closeJournalTrade`, computes `grossPnl`/`netPnl`/`rMultiple` via `packages/risk-engine`'s `calculateGrossPnl`/`calculateNetPnl`/`calculateRMultiple` — never inline arithmetic). `SKIPPED` trades go directly to `SKIPPED` status at creation, bypassing `PLANNED` entirely — they were never taken, so they never "open." `rMultiple` is `null` whenever there's no real risk baseline (`plannedRisk` was never set, or was explicitly `0` — both treated identically, since a caller can't distinguish "unset" from "zero" through the API), never fabricated as `0`.
+
+## Backtest → journal compatibility
+
+`packages/database`'s `getNormalizedTrades()` (the "analytics adapter") merges closed `JournalTrade` rows and all `BacktestTrade` rows into one shared shape — `NormalizedTrade`, defined in `packages/trading-domain` — **in memory, at query time**, without physically duplicating either table. `packages/analytics` (deterministic, no database dependency) operates only on `NormalizedTrade[]`, so grouping and winner/loser comparisons work uniformly across a strategy's backtested and real trading history without ever conflating "what a backtest said would have happened" with "what actually happened."
 
 ## Rejected and skipped setups
 
-Rejected and skipped setups are as important as executed trades — without them, filtering quality (did the Critic Agent's rejections actually avoid bad trades?) cannot be measured. Optional hypothetical-outcome tracking (what would have happened if executed) is always clearly labeled simulated and never mixed into real P&L reporting.
+Rejected and skipped setups remain fully queryable (`GET /setups?status=REJECTED`, etc.) — nothing is ever deleted. Without them, filtering quality (did a rejection actually avoid a bad trade?) cannot be measured later. Hypothetical-outcome tracking for a rejected setup (what would have happened if taken) is future work — not built in Milestone 2 — and when it exists it must be clearly labeled simulated and never mixed into real `JournalTrade`/`BacktestTrade` P&L reporting.
 
 ## Winner and loser analysis
 
-Never conclude "X causes losses" purely because X is common among losing trades. Always compute, for any candidate condition: sample size, prevalence among winners, prevalence among losers, average R with/without the condition, and profit factor with/without the condition — reported across **losers, winners, and all trades** together.
+`packages/analytics`' `compareWinnersLosers` never concludes "X causes losses" purely because X is common among losing trades — it reports sample size, prevalence, average R, and profit factor across losers, winners, and all trades together, and (when a condition predicate is supplied) the same broken out with/without that condition. No AI interpretation layer exists yet; the numbers are the entire output.
 
-## Agent value measurement
+## Post-trade analysis
 
-Agents are evaluated on observed historical outcomes, never on how convincing their explanation sounds: performance when an agent approves vs. rejects, hypothetical performance of agent-rejected setups, performance when multiple agents agree vs. disagree.
+`PostTradeAnalysis` (`outcome`, `primaryCause`/`contributingFactors` from the `LossCategory` enum, `confidence`, `evidence`, `researchHypotheses`) references either a `JournalTrade` or a `BacktestTrade` via `tradeId` + `tradeSource` (a polymorphic reference — Prisma has no cross-table foreign key, so this is validated at the application layer, not the database). **Nothing in this codebase writes this table automatically.** A row means a genuine analysis mechanism (not built yet) produced it, never a placeholder or a guess.
+
+## Agent execution audit (future)
+
+Still not implemented — `AgentExecution` remains a forward-declared type in `packages/trading-domain/src/future.ts` for Milestone 6+ (runtime AI agents). When built: `id`, `setupId`, `tradeId`, `agentType`/`agentVersion`, `provider`/`model`/`promptTemplateVersion`, `startedAt`/`completedAt`/`latencyMs`, `status`, `structuredInput`/`structuredOutput` (JSON), `decision`, `confidence`, `reasoningSummary`, token/cost fields, `errorCode`/`errorMessage`. Hidden chain-of-thought is never stored — only structured output and a concise audit summary.
+
+## Agent value measurement (future)
+
+Once runtime agents exist, they are evaluated on observed historical outcomes via `packages/analytics`, never on how convincing their explanation sounds: performance when an agent approves vs. rejects, hypothetical performance of agent-rejected setups, performance when multiple agents agree vs. disagree.
 
 ## Screenshots
 
-Metadata only in PostgreSQL (`id`, `tradeId`/`setupId`, `type` [`PRE_TRADE`/`POST_TRADE`], `createdAt`, `marketSnapshotId`, `storageKey`, `mimeType`, `width`/`height`, `chartConfigVersion`) — the image itself lives in object storage (local disk in development, S3-compatible in production), never as a large blob in the database. The `PRE_TRADE` image is never overwritten after the trade closes. See `docs/screenshot-design.md`.
+`TradeScreenshot` (Milestone 2, schema only): `id`, `setupId`/`tradeId`+`tradeSource` (polymorphic, same pattern as `PostTradeAnalysis`), `type` (`PRE_TRADE`/`POST_TRADE`), `storageKey`, `mimeType`, `width`/`height`, `marketSnapshotId`, `chartConfigVersion`, `createdAt`. Metadata only — the image itself lives in object storage (local disk in development, S3-compatible in production), never as a blob in Postgres. No renderer/capture pipeline exists yet; see `docs/screenshot-design.md` for the Milestone 5 design. The `PRE_TRADE` image, once screenshots are actually generated, is never overwritten after the trade closes.
 
 ## Analytics filtering surface
 
-Future performance analytics must support filtering by strategy, strategy version, instrument, timeframe, direction, session, hour, day of week, market regime, volatility regime, setup type, entry/stop/target method, agent decisions, rejection reasons, and paper vs. manual-live — and must never silently aggregate across different strategy versions.
+`packages/analytics`' `groupTradeAnalytics` currently groups by strategy, strategy version, instrument, direction, and execution mode (`GroupByField`), defaulting to `["strategyId", "strategyVersionId"]` (`DEFAULT_GROUP_BY`) so strategy versions are **never silently combined** — a caller must explicitly ask for a coarser grouping to merge them. Session/hour/day-of-week/market-regime/volatility-regime grouping is future work, gated on that structured data actually being populated on `MarketSnapshot` and joined through.
 
-## Why no journal tables exist in Milestone 1
+## Auditability
 
-Milestone 1 has no setups, no agents, and no live decision flow yet — there is nothing to journal. Building these tables now would mean empty, unused tables and a schema shaped around guesses instead of the real Milestone 2 requirements. `packages/trading-domain/src/future.ts` holds the draft TypeScript interfaces so the shape is already agreed on when Milestone 2 begins.
+Every `Setup`, `RiskCalculation`, `JournalTrade`, and `JournalEvent` row carries its `instrumentId`/`strategyId`/`strategyVersionId` (where applicable), so months later it remains possible to reconstruct what the market looked like, what strategy/version was active, what was calculated, what was decided, and what actually happened — without depending on anyone's memory of it.

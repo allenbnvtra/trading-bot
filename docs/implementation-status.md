@@ -1,10 +1,12 @@
 # Implementation Status
 
-Living progress tracker for Milestone 1. Update as work lands; do not let this drift from reality.
+Living progress tracker. Update as work lands; do not let this drift from reality.
 
 **Milestone 1: COMPLETE.** All quality gates pass (lint/typecheck/test/build), the full vertical slice is verified end-to-end against a live Postgres/Redis (real backtest via HTTP, deterministic rerun confirmed, QUEUED->COMPLETED transition observed live in the dashboard), and independent architecture/research-methodology/quality reviews all returned GO with zero BLOCKER/HIGH findings.
 
-## Completed
+**Milestone 2: database/analytics/API layers complete and verified end-to-end against live Postgres/Redis; dashboard pages in progress.**
+
+## Milestone 1 — Completed
 
 - Claude Code configuration: root `CLAUDE.md`, `.claude/agents/*.md` (system-architect, quant-engineer, data-engineer, backend-engineer, frontend-engineer, platform-engineer, research-methodologist, journal-analyst, quality-reviewer).
 - Workspace scaffolding: pnpm workspace, Turborepo pipeline, root TypeScript/ESLint/Prettier config, `.env.example`, `infra/docker-compose.yml` (Postgres 16 + Redis 7).
@@ -20,13 +22,21 @@ Living progress tracker for Milestone 1. Update as work lands; do not let this d
 - Documentation: `docs/architecture.md`, `docs/backtesting-assumptions.md`, `docs/research-methodology.md`, `docs/trade-journal-design.md`, `docs/screenshot-design.md`, `docs/roadmap.md`, `README.md`.
 - Final review pass: system-architect (no blockers), research-methodologist (no blockers; independently re-derived the backtest result to confirm it's honest and untuned), quality-reviewer (GO; 0 BLOCKER/HIGH, 1 MEDIUM + 2 LOW, all addressed — see "Known decisions").
 
-## In progress
+## Milestone 2 — Completed
 
-(none — Milestone 1 complete)
+- `packages/shared-types`: `SetupStatus`/`SetupSource`/`ExecutionMode`/`JournalTradeStatus`/`TradeSource`/`PostTradeOutcome`/`LossCategory`/`JournalEventType`/`JournalEntityType`/`ScreenshotType` enums; Zod DTOs for creating/transitioning setups, risk calculations, and journal trades (`journal.ts`) — 18 new tests.
+- `packages/trading-domain`: `MarketSnapshot`/`Setup`/`RiskCalculation`/`JournalTrade`/`JournalEvent`/`PostTradeAnalysis`/`TradeScreenshot`/`NormalizedTrade` promoted to real entities (`journal-entities.ts`); `Signal`/`AgentExecution`/`TradeTicket` remain in `future.ts` for Milestone 3+.
+- `packages/risk-engine`: added `calculateGrossPnl`/`calculateNetPnl`/`calculateRMultiple` — 10 new tests (47 total).
+- `packages/database`: migration `20260917161439_add_journal_analytics_foundation` (7 new tables), repositories for every Milestone 2 model (Setup's transition matrix fully validated, journal events emitted atomically alongside every state change), `getNormalizedTrades()` backtest↔journal analytics adapter, one demo Setup lifecycle added to the seed script — verified end-to-end against live Postgres via a full integration test (setup → snapshot → risk calc → journal events → paper trade → close → timeline → normalized-trade analytics).
+- `packages/analytics` (new): `calculateTradeAnalytics`, `groupTradeAnalytics` (`DEFAULT_GROUP_BY` never silently merges strategy versions), `compareWinnersLosers` — zero database dependency, 22 tests.
+- `apps/api`: `MarketSnapshotModule`, `SetupModule`, `JournalModule`, `AnalyticsModule`; a global `DomainErrorFilter` translates repository errors to 404/409 — verified end-to-end against live Postgres/Redis with real numbers (105 normalized trades merging 104 Milestone 1 backtest trades + 1 new journal trade).
+## Milestone 2 — In progress
+
+- `apps/dashboard`: `/journal`, `/trades`, `/analytics` pages + nav update (backend is ready and live-verified; dashboard work in flight).
 
 ## Remaining
 
-(none for Milestone 1 — see `docs/roadmap.md` for Milestone 2+)
+- Final Milestone 2 review pass (system-architect, journal-analyst, research-methodologist, quality-reviewer) once the dashboard lands.
 
 ## Known decisions
 
@@ -38,6 +48,11 @@ Living progress tracker for Milestone 1. Update as work lands; do not let this d
 - Same-candle stop-and-target exits apply the same adverse slippage as a plain STOP exit, for consistency (fixed after an initial pass omitted it).
 - `initialBalance`, `tickSize`, `tickValue`, `pointValue` reject a zero value at the API/schema boundary (synchronous 400) rather than only failing later inside `packages/risk-engine`; `commissionPerContract` and `riskPercentage` still legitimately allow zero. `POST /backtests` also rejects `startDate >= endDate`.
 - The dashboard's Research pages show a persistent banner noting the synthetic data and untuned strategy parameters, so that context isn't only discoverable in `docs/`.
+- `JournalTrade` is intentionally distinct from `BacktestTrade` — never duplicated into it. `packages/database`'s `getNormalizedTrades()` merges both in memory at query time for `packages/analytics`.
+- `JournalEvent.eventType`/`entityType` are real Prisma enums (stronger DB-level validation), not plain strings, unlike `Candle.timeframe` — their value sets don't start with digits, so the Prisma-enum-identifier problem that forced `timeframe` to be a string doesn't apply here.
+- Every event in a `Setup`'s lifecycle (including its `JournalTrade`'s) shares `correlationId = setup.id`, making `GET /setups/:id/timeline` a single indexed query rather than a cross-table join.
+- A `plannedRisk` of exactly `"0"` on a `JournalTrade` is treated identically to `null` (no risk baseline) at close time — `rMultiple` is `null`, never a thrown error or a fabricated `0` (a caller can't distinguish "unset" from "typed zero" through the API, so both get the same safe handling).
+- `NestJS`'s `@UsePipes` at the method level applies to *every* parameter, not just `@Body()` — any handler combining `@Param()` with a Zod-validated body must apply `ZodValidationPipe` at the parameter (`@Body(new ZodValidationPipe(schema))`), not the method, or the path param gets incorrectly validated against the body schema too.
 
 ## Known blockers
 

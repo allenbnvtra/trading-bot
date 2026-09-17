@@ -2,15 +2,17 @@
 
 Trading Copilot is built incrementally. Each milestone must be correct, tested, and reviewed before the next begins. Do not skip ahead.
 
-## Milestone 1 — Historical research/backtesting foundation (current)
+## Milestone 1 — Historical research/backtesting foundation (complete)
 
 Historical CSV → validated candles → PostgreSQL → instrument → strategy version → deterministic backtester → persisted trades → performance metrics → NestJS API → Next.js research dashboard → individual trade inspection.
 
 No runtime AI agents. No TradingView. No brokerage connectivity. No automatic execution.
 
-## Milestone 2 — Trade journal foundation + deeper analytics
+## Milestone 2 — Trade journal foundation + deeper analytics (complete, current)
 
-Journal event model, market snapshots, rejected/skipped trade tracking, winner/loss comparison analytics (see `docs/trade-journal-design.md`).
+Market snapshots, the Setup lifecycle (WATCH/PREPARE/READY/REJECTED/INVALIDATED/EXPIRED), persisted risk calculations, journal trades (paper/manual-live/skipped, distinct from Milestone 1's BacktestTrade), an append-only journal event log with full timeline reconstruction, a deterministic cross-cutting analytics engine (grouping + winner/loser comparison) spanning both backtested and real trades, and dashboard pages for all of it (`/journal`, `/trades`, `/analytics`). See `docs/trade-journal-design.md`.
+
+Rejected/skipped setups remain fully queryable, never deleted. `PostTradeAnalysis` and `TradeScreenshot` exist as schema foundations only — nothing auto-populates them yet.
 
 ## Milestone 3 — TradingView webhook ingestion
 

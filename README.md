@@ -15,12 +15,13 @@ apps/api         NestJS HTTP API
 apps/worker      BullMQ background job processor (runs backtests)
 apps/dashboard   Next.js research dashboard
 
-packages/database         Prisma schema, migrations, seed data, CSV importer
-packages/trading-domain   Domain entity types (Milestone 1 + forward-declared future types)
+packages/database         Prisma schema, migrations, seed data, CSV importer, journal repositories
+packages/trading-domain   Domain entity types (Milestone 1 + 2, plus forward-declared future types)
 packages/shared-types     Enums and Zod schemas shared everywhere
 packages/strategy-engine  Deterministic indicators + strategy definitions
-packages/risk-engine      Deterministic position sizing / risk math
+packages/risk-engine      Deterministic position sizing / risk / trade P&L math
 packages/backtester       Deterministic backtest engine + metrics
+packages/analytics        Deterministic cross-cutting analytics (grouping, winner/loser comparison)
 ```
 
 PostgreSQL is the permanent source of truth. Redis is ephemeral queue/cache infrastructure only.
@@ -83,13 +84,73 @@ curl -X POST http://localhost:3001/backtests \
 
 Poll `GET /backtests/:id` for status (`QUEUED` → `RUNNING` → `COMPLETED`/`FAILED`), then `GET /backtests/:id/trades` and `GET /backtests/:id/trades/:tradeId` for results.
 
+## Trade journal (Milestone 2)
+
+The journal records real (paper/manual-live) trades and every decision that led to them, distinct from Milestone 1's deterministic backtest trades. A full lifecycle, end to end:
+
+```bash
+# 1. Record what the market looked like at decision time
+curl -X POST http://localhost:3001/market-snapshots -H "Content-Type: application/json" -d '{
+  "instrumentId": "<instrument-id>", "timestamp": "2024-06-01T14:00:00.000Z", "timeframe": "1h"
+}'
+
+# 2. Create a candidate setup against that snapshot
+curl -X POST http://localhost:3001/setups -H "Content-Type: application/json" -d '{
+  "instrumentId": "<instrument-id>", "strategyId": "<strategy-id>", "strategyVersionId": "<strategy-version-id>",
+  "marketSnapshotId": "<snapshot-id>", "direction": "LONG", "source": "MANUAL_TEST",
+  "plannedEntry": "5100", "plannedStop": "5080", "plannedTarget1": "5140"
+}'
+
+# 3. Move it through the state machine (WATCH -> PREPARE -> READY; a 409 comes back on any invalid transition)
+curl -X PATCH http://localhost:3001/setups/<setup-id>/status -H "Content-Type: application/json" -d '{"status":"PREPARE"}'
+curl -X PATCH http://localhost:3001/setups/<setup-id>/status -H "Content-Type: application/json" -d '{"status":"READY"}'
+
+# 4. Get a deterministic risk calculation (packages/risk-engine, never computed client-side)
+curl -X POST http://localhost:3001/setups/<setup-id>/risk-calculations -H "Content-Type: application/json" -d '{
+  "accountEquity": "50000", "riskPercentage": "1", "slippageTicks": 1
+}'
+
+# 5. Record the trade, its entry, and its close
+curl -X POST http://localhost:3001/journal/trades -H "Content-Type: application/json" -d '{
+  "setupId": "<setup-id>", "instrumentId": "<instrument-id>", "strategyId": "<strategy-id>",
+  "strategyVersionId": "<strategy-version-id>", "direction": "LONG",
+  "plannedEntry": "5100", "plannedStop": "5080", "executionMode": "PAPER"
+}'
+curl -X POST http://localhost:3001/journal/trades/<trade-id>/entry -H "Content-Type: application/json" -d '{
+  "actualEntry": "5101.5", "entryTimestamp": "2024-06-01T15:00:00.000Z", "quantity": 1
+}'
+curl -X POST http://localhost:3001/journal/trades/<trade-id>/close -H "Content-Type: application/json" -d '{
+  "actualExit": "5138", "exitTimestamp": "2024-06-01T18:00:00.000Z"
+}'
+
+# 6. Reconstruct the full decision timeline
+curl http://localhost:3001/setups/<setup-id>/timeline
+```
+
+## Analytics (Milestone 2)
+
+```bash
+curl http://localhost:3001/analytics/strategies                                   # one row per strategy version, never merged
+curl http://localhost:3001/analytics/strategies/<id>/versions/<version-id>         # metrics, long vs short, winners vs losers
+curl "http://localhost:3001/analytics/comparison?groupBy=instrumentId,direction"   # ad-hoc grouping
+curl http://localhost:3001/analytics/winners-losers                               # sample-size-aware winner/loser comparison
+```
+
+All of the above draw from `packages/analytics`, running over a merged, normalized view of Milestone 1 backtest trades and Milestone 2 journal trades (`getNormalizedTrades()`) — never duplicated into a third table.
+
 ## Dashboard
 
 Once `pnpm dev` is running: http://localhost:3000
+
+- `/research` — run and inspect backtests
+- `/journal` — chronological journal event timeline, filterable
+- `/trades` — journal trades (paper/manual-live/skipped), each with its full decision timeline
+- `/analytics` — per-strategy-version performance, drill down to long/short and winner/loser breakdowns
+- `/strategies`, `/backtests`, `/market-data` — Milestone 1 pages
 
 ## Assumptions and design docs
 
 - `docs/backtesting-assumptions.md` — every conservative assumption baked into the backtester (entry timing, same-candle stop/target, slippage, commissions, gaps).
 - `docs/research-methodology.md` — the guardrails required before any future AI-driven strategy research is trusted.
-- `docs/trade-journal-design.md` — the future trade journal / audit schema design.
-- `docs/screenshot-design.md` — the future chart-screenshot pipeline design.
+- `docs/trade-journal-design.md` — the trade journal / audit schema design (Milestone 2, implemented).
+- `docs/screenshot-design.md` — the future chart-screenshot pipeline design (Milestone 5).
