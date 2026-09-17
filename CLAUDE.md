@@ -10,16 +10,11 @@ Humans execute trades manually.
 
 ## Current milestone
 
-Milestone 1:
+Milestone 1 (complete): historical candles → deterministic strategies → deterministic backtesting → persisted trades → performance analytics → dashboard inspection.
 
-historical candles
-→ deterministic strategies
-→ deterministic backtesting
-→ persisted trades
-→ performance analytics
-→ dashboard inspection
+Milestone 2 (current): trade journal + analytics foundation — market snapshots, setups, risk-calculation persistence, journal trades, append-only journal events, deterministic cross-cutting analytics. See `docs/trade-journal-design.md`.
 
-Do not skip directly to runtime AI agents.
+Do not skip directly to runtime AI agents, TradingView, or broker execution.
 
 See `docs/implementation-status.md` for current progress and `docs/roadmap.md` for future milestones.
 
@@ -58,6 +53,7 @@ Packages:
 * packages/strategy-engine
 * packages/backtester
 * packages/risk-engine
+* packages/analytics
 
 PostgreSQL is the source of truth.
 
@@ -144,7 +140,7 @@ Subagent output is not automatically correct.
 ### Ownership
 
 * `system-architect` — architecture review; primarily read-only
-* `quant-engineer` — packages/strategy-engine, packages/backtester, packages/risk-engine
+* `quant-engineer` — packages/strategy-engine, packages/backtester, packages/risk-engine, packages/analytics
 * `data-engineer` — PostgreSQL, Prisma, imports, persistence
 * `backend-engineer` — NestJS API and BullMQ worker
 * `frontend-engineer` — Next.js dashboard

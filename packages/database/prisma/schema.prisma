@@ -69,9 +69,12 @@ model Instrument {
   createdAt             DateTime   @default(now())
   updatedAt             DateTime   @updatedAt
 
-  candles        Candle[]
-  backtests      Backtest[]
-  backtestTrades BacktestTrade[]
+  candles         Candle[]
+  backtests       Backtest[]
+  backtestTrades  BacktestTrade[]
+  marketSnapshots MarketSnapshot[]
+  setups          Setup[]
+  journalTrades   JournalTrade[]
 
   @@unique([symbol, exchange])
 }
@@ -109,7 +112,9 @@ model Strategy {
   description String
   createdAt   DateTime @default(now())
 
-  versions StrategyVersion[]
+  versions      StrategyVersion[]
+  setups        Setup[]
+  journalTrades JournalTrade[]
 }
 
 // StrategyVersion rows are immutable once created — see CLAUDE.md and
@@ -130,6 +135,8 @@ model StrategyVersion {
 
   backtests      Backtest[]
   backtestTrades BacktestTrade[]
+  setups         Setup[]
+  journalTrades  JournalTrade[]
 
   @@unique([strategyId, version])
 }
@@ -238,4 +245,384 @@ model BacktestMetrics {
 
   maximumConsecutiveWins   Int
   maximumConsecutiveLosses Int
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 2 — trade journal + analytics foundation (see
+// docs/trade-journal-design.md). PostgreSQL remains the only source of
+// truth; nothing here depends on LLM memory. BacktestTrade/BacktestMetrics
+// above are untouched — the journal tables below are additive.
+// ---------------------------------------------------------------------------
+
+enum SetupStatus {
+  WATCH
+  PREPARE
+  READY
+  REJECTED
+  INVALIDATED
+  EXPIRED
+}
+
+enum SetupSource {
+  BACKTEST
+  MANUAL_TEST
+  SYSTEM
+}
+
+enum ExecutionMode {
+  BACKTEST
+  PAPER
+  MANUAL_LIVE
+  SKIPPED
+}
+
+enum JournalTradeStatus {
+  PLANNED
+  OPEN
+  CLOSED
+  SKIPPED
+}
+
+// Which table a polymorphic reference (PostTradeAnalysis.tradeId,
+// TradeScreenshot.tradeId) points at. Prisma has no cross-table polymorphic
+// foreign key, so these references are plain String ids validated at the
+// application layer, tagged with this enum instead of a DB-level FK.
+enum TradeSource {
+  BACKTEST_TRADE
+  JOURNAL_TRADE
+}
+
+enum PostTradeOutcome {
+  WIN
+  LOSS
+  BREAKEVEN
+}
+
+// See shared-types LOSS_CATEGORIES — nothing in this codebase auto-assigns
+// these; a row only ever gets one from a genuine analysis mechanism, which
+// does not exist yet (see CLAUDE.md, docs/research-methodology.md).
+enum LossCategory {
+  TREND_MISALIGNMENT
+  RESISTANCE_TOO_CLOSE
+  SUPPORT_TOO_CLOSE
+  HIGH_VOLATILITY
+  LOW_VOLATILITY
+  LOW_VOLUME
+  BREAKOUT_FAILURE
+  FALSE_BREAKOUT
+  EARLY_ENTRY
+  LATE_ENTRY
+  NEWS_EVENT
+  BAD_RISK_REWARD
+  MARKET_REGIME_MISMATCH
+  SESSION_TIMING
+  GAP_EVENT
+  STOP_TOO_TIGHT
+  STOP_TOO_WIDE
+  UNKNOWN
+}
+
+// Milestone 2 subset only. AGENT_STARTED/COMPLETED/FAILED,
+// RESEARCH_HYPOTHESIS_CREATED, STRATEGY_VERSION_APPROVED, STRATEGY_PAUSED
+// etc. are added via a small additive migration once the runtime agents
+// that emit them exist (Milestone 6+) — do not pre-add them now.
+enum JournalEventType {
+  SETUP_CREATED
+  STRATEGY_EVALUATED
+  RISK_CALCULATED
+  SETUP_APPROVED
+  SETUP_REJECTED
+  SETUP_INVALIDATED
+  SETUP_EXPIRED
+  TRADE_READY
+  TRADE_EXECUTED
+  TRADE_SKIPPED
+  TRADE_CLOSED
+  POST_TRADE_ANALYSIS_CREATED
+  STRATEGY_VERSION_PROPOSED
+}
+
+enum JournalEntityType {
+  SETUP
+  JOURNAL_TRADE
+  RISK_CALCULATION
+  MARKET_SNAPSHOT
+  BACKTEST
+  BACKTEST_TRADE
+  STRATEGY_VERSION
+  POST_TRADE_ANALYSIS
+}
+
+enum ScreenshotType {
+  PRE_TRADE
+  POST_TRADE
+}
+
+// Immutable once created — packages/database exposes no update function for
+// this model. A Setup needing fresher context gets a new MarketSnapshot row.
+model MarketSnapshot {
+  id           String     @id @default(uuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  timestamp DateTime
+  // Plain String, not a Prisma enum — see the Candle.timeframe note above.
+  timeframe String
+
+  windowCandleCount    Int?
+  windowStartTimestamp DateTime?
+  windowEndTimestamp   DateTime?
+
+  trend1m  String?
+  trend5m  String?
+  trend15m String?
+  trend1h  String?
+  trend4h  String?
+  trend1d  String?
+
+  atr           Decimal? @db.Decimal(18, 8)
+  atrPercentile Decimal? @db.Decimal(9, 6)
+
+  volume           Decimal? @db.Decimal(18, 8)
+  volumePercentile Decimal? @db.Decimal(9, 6)
+
+  vwap         Decimal? @db.Decimal(18, 8)
+  vwapDistance Decimal? @db.Decimal(18, 8)
+
+  nearestSupport    Decimal? @db.Decimal(18, 8)
+  distanceToSupport Decimal? @db.Decimal(18, 8)
+
+  nearestResistance    Decimal? @db.Decimal(18, 8)
+  distanceToResistance Decimal? @db.Decimal(18, 8)
+
+  session      String?
+  timeOfDay    String?
+  dayOfWeek    String?
+  marketRegime String?
+
+  metadata Json @default("{}")
+
+  createdAt DateTime @default(now())
+
+  setups Setup[]
+
+  @@index([instrumentId, timeframe, timestamp])
+}
+
+// StrategyVersion-style immutability: no update/mutate function exists in
+// packages/database for parameters other than `status` (the state machine
+// itself). Status transitions are validated in apps/api's setup service.
+model Setup {
+  id String @id @default(uuid())
+
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+
+  strategyId String
+  strategy   Strategy @relation(fields: [strategyId], references: [id])
+
+  strategyVersionId String
+  strategyVersion   StrategyVersion @relation(fields: [strategyVersionId], references: [id])
+
+  marketSnapshotId String
+  marketSnapshot   MarketSnapshot @relation(fields: [marketSnapshotId], references: [id])
+
+  direction Direction
+  source    SetupSource
+
+  plannedEntry   Decimal  @db.Decimal(18, 8)
+  plannedStop    Decimal  @db.Decimal(18, 8)
+  plannedTarget1 Decimal  @db.Decimal(18, 8)
+  plannedTarget2 Decimal? @db.Decimal(18, 8)
+
+  status          SetupStatus @default(WATCH)
+  decisionSummary String?
+
+  metadata Json @default("{}")
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  expiresAt DateTime?
+
+  riskCalculations RiskCalculation[]
+  journalTrades    JournalTrade[]
+  screenshots      TradeScreenshot[]
+
+  @@index([instrumentId, status])
+  @@index([strategyVersionId])
+  @@index([status])
+}
+
+// Immutable once created — packages/database exposes no update function.
+// A Setup needing a fresh calculation (price moved) gets a new row.
+model RiskCalculation {
+  id String @id @default(uuid())
+
+  setupId String
+  setup   Setup  @relation(fields: [setupId], references: [id], onDelete: Cascade)
+
+  accountEquity Decimal @db.Decimal(18, 8)
+  riskPercentage Decimal @db.Decimal(9, 6)
+  riskBudget     Decimal @db.Decimal(18, 8)
+
+  entryPrice Decimal @db.Decimal(18, 8)
+  stopPrice  Decimal @db.Decimal(18, 8)
+
+  stopDistancePoints Decimal @db.Decimal(18, 8)
+  stopDistanceTicks  Decimal @db.Decimal(18, 8)
+
+  pointValue Decimal @db.Decimal(18, 8)
+  tickValue  Decimal @db.Decimal(18, 8)
+
+  estimatedCommission Decimal @db.Decimal(18, 8)
+  estimatedSlippage   Decimal @db.Decimal(18, 8)
+
+  riskPerUnit        Decimal @db.Decimal(18, 8)
+  calculatedQuantity Int
+  estimatedTotalRisk Decimal @db.Decimal(18, 8)
+  riskReward         Decimal @db.Decimal(18, 8)
+
+  createdAt DateTime @default(now())
+
+  @@index([setupId, createdAt])
+}
+
+// Distinct from BacktestTrade by design — see the model-level comment in
+// docs/trade-journal-design.md. Never populated by copying BacktestTrade
+// rows; packages/analytics normalizes both for cross-cutting queries.
+model JournalTrade {
+  id String @id @default(uuid())
+
+  setupId String?
+  setup   Setup?  @relation(fields: [setupId], references: [id])
+
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+
+  strategyId String
+  strategy   Strategy @relation(fields: [strategyId], references: [id])
+
+  strategyVersionId String
+  strategyVersion   StrategyVersion @relation(fields: [strategyVersionId], references: [id])
+
+  direction Direction
+
+  plannedEntry   Decimal  @db.Decimal(18, 8)
+  plannedStop    Decimal  @db.Decimal(18, 8)
+  plannedTarget1 Decimal? @db.Decimal(18, 8)
+  plannedTarget2 Decimal? @db.Decimal(18, 8)
+
+  actualEntry Decimal? @db.Decimal(18, 8)
+  actualExit  Decimal? @db.Decimal(18, 8)
+
+  entryTimestamp DateTime?
+  exitTimestamp  DateTime?
+
+  quantity Int?
+
+  plannedRisk Decimal? @db.Decimal(18, 8)
+
+  estimatedFees     Decimal? @db.Decimal(18, 8)
+  actualFees        Decimal? @db.Decimal(18, 8)
+  estimatedSlippage Decimal? @db.Decimal(18, 8)
+  actualSlippage    Decimal? @db.Decimal(18, 8)
+
+  grossPnl  Decimal? @db.Decimal(18, 8)
+  netPnl    Decimal? @db.Decimal(18, 8)
+  rMultiple Decimal? @db.Decimal(18, 8)
+
+  mfe Decimal? @db.Decimal(18, 8)
+  mae Decimal? @db.Decimal(18, 8)
+
+  executionMode ExecutionMode
+  status        JournalTradeStatus @default(PLANNED)
+
+  entryNotes String?
+  exitNotes  String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([instrumentId])
+  @@index([strategyVersionId])
+  @@index([executionMode, status])
+}
+
+// Append-only — packages/database exposes only a create function, never
+// update or delete. entityType/entityId is a polymorphic reference (no
+// DB-level FK; see the TradeSource comment above for why).
+model JournalEvent {
+  id String @id @default(uuid())
+
+  eventType JournalEventType
+  timestamp DateTime         @default(now())
+
+  entityType JournalEntityType
+  entityId   String
+
+  correlationId String?
+
+  instrumentId      String?
+  strategyId        String?
+  strategyVersionId String?
+
+  metadata Json @default("{}")
+
+  @@index([entityType, entityId])
+  @@index([correlationId])
+  @@index([timestamp])
+  @@index([instrumentId])
+  @@index([strategyId, strategyVersionId])
+}
+
+// Nothing in this codebase writes this table automatically — see CLAUDE.md
+// and docs/research-methodology.md. A row means a genuine analysis
+// mechanism produced it.
+model PostTradeAnalysis {
+  id String @id @default(uuid())
+
+  tradeId     String
+  tradeSource TradeSource
+
+  outcome      PostTradeOutcome
+  primaryCause LossCategory?
+
+  contributingFactors LossCategory[]
+
+  confidence Decimal? @db.Decimal(9, 6)
+
+  evidence           Json     @default("{}")
+  researchHypotheses String[]
+
+  createdAt DateTime @default(now())
+
+  @@index([tradeId, tradeSource])
+}
+
+// Metadata only — see docs/screenshot-design.md. No renderer/capture
+// pipeline exists yet; this is schema foundation for Milestone 5.
+model TradeScreenshot {
+  id String @id @default(uuid())
+
+  setupId String?
+  setup   Setup?  @relation(fields: [setupId], references: [id])
+
+  tradeId     String?
+  tradeSource TradeSource?
+
+  type ScreenshotType
+
+  storageKey String
+  mimeType   String
+  width      Int?
+  height     Int?
+
+  marketSnapshotId String?
+
+  chartConfigVersion String?
+
+  createdAt DateTime @default(now())
+
+  @@index([tradeId, tradeSource])
+  @@index([setupId])
 }
