@@ -4,7 +4,7 @@ Living progress tracker. Update as work lands; do not let this drift from realit
 
 **Milestone 1: COMPLETE.** All quality gates pass (lint/typecheck/test/build), the full vertical slice is verified end-to-end against a live Postgres/Redis (real backtest via HTTP, deterministic rerun confirmed, QUEUED->COMPLETED transition observed live in the dashboard), and independent architecture/research-methodology/quality reviews all returned GO with zero BLOCKER/HIGH findings.
 
-**Milestone 2: database/analytics/API layers complete and verified end-to-end against live Postgres/Redis; dashboard pages in progress.**
+**Milestone 2: COMPLETE.** All quality gates pass, the full journal pipeline is verified end-to-end against live Postgres/Redis, and independent architecture/journal-completeness/research-methodology/quality reviews are all resolved — one HIGH finding (normalized-trade merge ordering, corrupting drawdown/streak metrics) and several smaller items, all fixed and re-verified.
 
 ## Milestone 1 — Completed
 
@@ -31,10 +31,11 @@ Living progress tracker. Update as work lands; do not let this drift from realit
 - `packages/analytics` (new): `calculateTradeAnalytics`, `groupTradeAnalytics` (`DEFAULT_GROUP_BY` never silently merges strategy versions), `compareWinnersLosers` — zero database dependency, 22 tests.
 - `apps/api`: `MarketSnapshotModule`, `SetupModule`, `JournalModule`, `AnalyticsModule`; a global `DomainErrorFilter` translates repository errors to 404/409 — verified end-to-end against live Postgres/Redis with real numbers (105 normalized trades merging 104 Milestone 1 backtest trades + 1 new journal trade).
 - `apps/dashboard`: `/journal`, `/trades`, `/analytics` pages + nav update — verified against the live API (real 404 handling, real numbers matching the raw API response, a real demo trade's 7-event setup timeline rendered in order).
+- Final review pass: system-architect (no blockers; 2 LOW items, both fixed), journal-analyst (no integrity issues; corrected 2 doc inaccuracies and found the `STRATEGY_VERSION_PROPOSED` gap below, now closed), research-methodologist (no causal-language/null-handling/silent-merge issues; 1 MEDIUM — `/analytics` lacked a trust disclaimer — fixed), quality-reviewer (1 HIGH — `getNormalizedTrades()` wasn't chronologically ordered, corrupting drawdown/streak metrics — fixed and re-verified; everything else clean).
 
 ## Remaining
 
-- Final Milestone 2 review pass (system-architect, journal-analyst, research-methodologist, quality-reviewer).
+(none currently outstanding — see `docs/roadmap.md` for Milestone 3+)
 
 ## Known decisions
 
@@ -51,6 +52,10 @@ Living progress tracker. Update as work lands; do not let this drift from realit
 - Every event in a `Setup`'s lifecycle (including its `JournalTrade`'s) shares `correlationId = setup.id`, making `GET /setups/:id/timeline` a single indexed query rather than a cross-table join.
 - A `plannedRisk` of exactly `"0"` on a `JournalTrade` is treated identically to `null` (no risk baseline) at close time — `rMultiple` is `null`, never a thrown error or a fabricated `0` (a caller can't distinguish "unset" from "typed zero" through the API, so both get the same safe handling).
 - `NestJS`'s `@UsePipes` at the method level applies to *every* parameter, not just `@Body()` — any handler combining `@Param()` with a Zod-validated body must apply `ZodValidationPipe` at the parameter (`@Body(new ZodValidationPipe(schema))`), not the method, or the path param gets incorrectly validated against the body schema too.
+- `getNormalizedTrades()` sorts its merged output by `entryTimestamp` (both source queries are also individually ordered, but concatenating two sorted lists doesn't itself produce a globally sorted one) — `packages/analytics` never re-sorts, so this is the only place ordering can be guaranteed.
+- `createPostTradeAnalysis` verifies the referenced `BacktestTrade`/`JournalTrade` exists before inserting (404 via `NotFoundError` otherwise) — the only integrity check available for a polymorphic reference that can't have a real database foreign key.
+- `createStrategyVersion` emits `STRATEGY_VERSION_PROPOSED` in the same transaction as the create — no `StrategyVersion` row exists without a corresponding journal entry.
+- `/analytics` and its strategy-version detail page carry an `AnalyticsDisclaimer` banner (mirroring `/research`'s `ResearchDisclaimer`) since a single row can blend simulated backtest trades and real/paper journal trades — check the trades table's `Source` column before treating a number as evidence about live performance.
 
 ## Known blockers
 
