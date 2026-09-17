@@ -185,6 +185,204 @@ export interface MarketDataImportResult {
   errors: { row: number; message: string }[];
 }
 
+// --- Milestone 2: journal, setups, analytics ---------------------------
+
+export type JournalEventType =
+  | "SETUP_CREATED"
+  | "STRATEGY_EVALUATED"
+  | "RISK_CALCULATED"
+  | "SETUP_APPROVED"
+  | "SETUP_REJECTED"
+  | "SETUP_INVALIDATED"
+  | "SETUP_EXPIRED"
+  | "TRADE_READY"
+  | "TRADE_EXECUTED"
+  | "TRADE_SKIPPED"
+  | "TRADE_CLOSED"
+  | "POST_TRADE_ANALYSIS_CREATED"
+  | "STRATEGY_VERSION_PROPOSED";
+
+export type JournalEntityType =
+  | "SETUP"
+  | "JOURNAL_TRADE"
+  | "RISK_CALCULATION"
+  | "MARKET_SNAPSHOT"
+  | "BACKTEST"
+  | "BACKTEST_TRADE"
+  | "STRATEGY_VERSION"
+  | "POST_TRADE_ANALYSIS";
+
+export type SetupStatus = "WATCH" | "PREPARE" | "READY" | "REJECTED" | "INVALIDATED" | "EXPIRED";
+export type SetupSource = "BACKTEST" | "MANUAL_TEST" | "SYSTEM";
+export type ExecutionMode = "BACKTEST" | "PAPER" | "MANUAL_LIVE" | "SKIPPED";
+export type JournalTradeStatus = "PLANNED" | "OPEN" | "CLOSED" | "SKIPPED";
+export type NormalizedTradeSource = "BACKTEST" | "JOURNAL";
+
+export interface JournalEvent {
+  id: string;
+  eventType: JournalEventType;
+  timestamp: string;
+  entityType: JournalEntityType;
+  entityId: string;
+  correlationId: string | null;
+  instrumentId: string | null;
+  strategyId: string | null;
+  strategyVersionId: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface JournalEventFilters {
+  entityType?: JournalEntityType;
+  entityId?: string;
+  correlationId?: string;
+  instrumentId?: string;
+  strategyId?: string;
+  strategyVersionId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export interface Setup {
+  id: string;
+  instrumentId: string;
+  strategyId: string;
+  strategyVersionId: string;
+  marketSnapshotId: string;
+  direction: Direction;
+  source: SetupSource;
+  plannedEntry: string;
+  plannedStop: string;
+  plannedTarget1: string;
+  plannedTarget2: string | null;
+  status: SetupStatus;
+  decisionSummary: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string | null;
+}
+
+export interface JournalTrade {
+  id: string;
+  setupId: string | null;
+  instrumentId: string;
+  strategyId: string;
+  strategyVersionId: string;
+  direction: Direction;
+  plannedEntry: string;
+  plannedStop: string;
+  plannedTarget1: string | null;
+  plannedTarget2: string | null;
+  actualEntry: string | null;
+  actualExit: string | null;
+  entryTimestamp: string | null;
+  exitTimestamp: string | null;
+  quantity: number | null;
+  plannedRisk: string | null;
+  estimatedFees: string | null;
+  actualFees: string | null;
+  estimatedSlippage: string | null;
+  actualSlippage: string | null;
+  grossPnl: string | null;
+  netPnl: string | null;
+  rMultiple: string | null;
+  mfe: string | null;
+  mae: string | null;
+  executionMode: ExecutionMode;
+  status: JournalTradeStatus;
+  entryNotes: string | null;
+  exitNotes: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface JournalTradeFilters {
+  instrumentId?: string;
+  strategyId?: string;
+  strategyVersionId?: string;
+  direction?: Direction;
+  executionMode?: ExecutionMode;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export interface TradeAnalyticsMetrics {
+  tradeCount: number;
+  wins: number;
+  losses: number;
+  winRate: string;
+  grossProfit: string;
+  grossLoss: string;
+  netPnl: string;
+  averagePnl: string;
+  expectancy: string;
+  averageR: string;
+  profitFactor: string | null;
+  averageWinner: string;
+  averageLoser: string;
+  largestWinner: string;
+  largestLoser: string;
+  maxDrawdown: string;
+  maxDrawdownPercent: string | null;
+  maximumConsecutiveWins: number;
+  maximumConsecutiveLosses: number;
+  mfeAverage: string | null;
+  maeAverage: string | null;
+  totalFees: string;
+  averageSlippage: string | null;
+}
+
+export interface StrategyGroupSummary {
+  strategyId: string | null;
+  strategyName: string | null;
+  strategyVersionId: string | null;
+  version: string | null;
+  metrics: TradeAnalyticsMetrics;
+}
+
+export interface GroupComparisonStats {
+  sampleSize: number;
+  averageR: string;
+  profitFactor: string | null;
+  winRate: string;
+}
+
+export interface WinnerLoserComparison {
+  winners: GroupComparisonStats;
+  losers: GroupComparisonStats;
+  allTrades: GroupComparisonStats;
+}
+
+export interface NormalizedTrade {
+  source: NormalizedTradeSource;
+  id: string;
+  strategyId: string;
+  strategyVersionId: string;
+  instrumentId: string;
+  direction: Direction;
+  executionMode: ExecutionMode;
+  entryTimestamp: string;
+  exitTimestamp: string;
+  entryPrice: string;
+  exitPrice: string;
+  quantity: number;
+  grossPnl: string;
+  fees: string;
+  netPnl: string;
+  riskAmount: string | null;
+  rMultiple: string | null;
+  mfe: string | null;
+  mae: string | null;
+  slippage: string | null;
+}
+
+export interface StrategyVersionAnalyticsDetail {
+  metrics: TradeAnalyticsMetrics;
+  byDirection: { LONG: TradeAnalyticsMetrics; SHORT: TradeAnalyticsMetrics };
+  winnersLosers: WinnerLoserComparison;
+  trades: NormalizedTrade[];
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -281,4 +479,49 @@ export function importMarketData(formData: FormData): Promise<MarketDataImportRe
     method: "POST",
     body: formData,
   });
+}
+
+/** Builds a `?a=b&c=d` query string, omitting any empty/undefined filter values. */
+function toQueryString<T extends object>(filters: T): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(filters as Record<string, string | undefined>)) {
+    if (value !== undefined && value !== null && value !== "") {
+      params.set(key, value);
+    }
+  }
+  const query = params.toString();
+  return query ? `?${query}` : "";
+}
+
+export function getJournalEvents(filters: JournalEventFilters = {}): Promise<JournalEvent[]> {
+  return apiFetch<JournalEvent[]>(`/journal/events${toQueryString(filters)}`);
+}
+
+export function getSetup(id: string): Promise<Setup> {
+  return apiFetch<Setup>(`/setups/${id}`);
+}
+
+export function getSetupTimeline(id: string): Promise<JournalEvent[]> {
+  return apiFetch<JournalEvent[]>(`/setups/${id}/timeline`);
+}
+
+export function getJournalTrades(filters: JournalTradeFilters = {}): Promise<JournalTrade[]> {
+  return apiFetch<JournalTrade[]>(`/journal/trades${toQueryString(filters)}`);
+}
+
+export function getJournalTrade(id: string): Promise<JournalTrade> {
+  return apiFetch<JournalTrade>(`/journal/trades/${id}`);
+}
+
+export function getAnalyticsStrategies(): Promise<StrategyGroupSummary[]> {
+  return apiFetch<StrategyGroupSummary[]>("/analytics/strategies");
+}
+
+export function getAnalyticsStrategyVersionDetail(
+  strategyId: string,
+  versionId: string,
+): Promise<StrategyVersionAnalyticsDetail> {
+  return apiFetch<StrategyVersionAnalyticsDetail>(
+    `/analytics/strategies/${strategyId}/versions/${versionId}`,
+  );
 }
