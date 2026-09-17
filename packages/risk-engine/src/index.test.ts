@@ -2,7 +2,10 @@ import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
   RiskEngineError,
+  calculateGrossPnl,
+  calculateNetPnl,
   calculatePositionSize,
+  calculateRMultiple,
   calculateRiskBudget,
   calculateRiskPerContract,
   calculateRiskReward,
@@ -179,5 +182,69 @@ describe("calculateRiskReward", () => {
     expect(() => calculateRiskReward(D(100), D(95), new Decimal(Infinity))).toThrow(
       RiskEngineError,
     );
+  });
+});
+
+describe("calculateGrossPnl", () => {
+  it("computes a positive gross P&L for a winning LONG", () => {
+    // (105-100) * 50 * 2 = 500
+    expect(calculateGrossPnl(D(100), D(105), 2, D(50), "LONG").toString()).toBe("500");
+  });
+
+  it("computes a negative gross P&L for a losing LONG", () => {
+    expect(calculateGrossPnl(D(100), D(95), 2, D(50), "LONG").toString()).toBe("-500");
+  });
+
+  it("computes a positive gross P&L for a winning SHORT", () => {
+    // (100-95) * 50 * 2 = 500
+    expect(calculateGrossPnl(D(100), D(95), 2, D(50), "SHORT").toString()).toBe("500");
+  });
+
+  it("computes a negative gross P&L for a losing SHORT", () => {
+    expect(calculateGrossPnl(D(100), D(105), 2, D(50), "SHORT").toString()).toBe("-500");
+  });
+
+  it("throws on a zero or non-integer quantity", () => {
+    expect(() => calculateGrossPnl(D(100), D(105), 0, D(50), "LONG")).toThrow(RiskEngineError);
+    expect(() => calculateGrossPnl(D(100), D(105), 1.5, D(50), "LONG")).toThrow(RiskEngineError);
+  });
+
+  it("throws on a non-positive pointValue", () => {
+    expect(() => calculateGrossPnl(D(100), D(105), 1, D(0), "LONG")).toThrow(RiskEngineError);
+  });
+
+  it("throws on NaN/Infinity prices", () => {
+    expect(() => calculateGrossPnl(new Decimal(NaN), D(105), 1, D(50), "LONG")).toThrow(
+      RiskEngineError,
+    );
+  });
+});
+
+describe("calculateNetPnl", () => {
+  it("subtracts fees from gross P&L", () => {
+    expect(calculateNetPnl(D(500), D(10)).toString()).toBe("490");
+  });
+
+  it("allows a negative net P&L", () => {
+    expect(calculateNetPnl(D(-500), D(10)).toString()).toBe("-510");
+  });
+
+  it("throws on negative fees", () => {
+    expect(() => calculateNetPnl(D(500), D(-1))).toThrow(RiskEngineError);
+  });
+});
+
+describe("calculateRMultiple", () => {
+  it("computes a positive R multiple for a winner", () => {
+    expect(calculateRMultiple(D(500), D(250)).toString()).toBe("2");
+  });
+
+  it("computes a negative R multiple for a loser", () => {
+    expect(calculateRMultiple(D(-250), D(250)).toString()).toBe("-1");
+  });
+
+  it("throws on a zero or negative riskAmount", () => {
+    expect(() => calculateRMultiple(D(500), D(0))).toThrow(RiskEngineError);
+    expect(() => calculateRMultiple(D(500), D(-1))).toThrow(RiskEngineError);
   });
 });

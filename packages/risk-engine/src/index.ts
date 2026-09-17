@@ -1,4 +1,5 @@
 import Decimal from "decimal.js";
+import type { Direction } from "@trading-copilot/shared-types";
 import { RiskEngineError } from "./errors";
 import { assertFiniteDecimal, assertNonNegativeDecimal, assertPositiveDecimal } from "./validation";
 
@@ -108,4 +109,50 @@ export function calculateRiskReward(entry: Decimal, stop: Decimal, target: Decim
     );
   }
   return ratio;
+}
+
+/**
+ * Realized gross P&L for a closed position. Mirrors the formula used
+ * internally by packages/backtester's engine (kept as a small, separately
+ * tested public function here so callers outside the backtester — e.g. the
+ * Milestone 2 journal trade close flow — never reimplement this arithmetic
+ * themselves; see CLAUDE.md "financial calculations are never independently
+ * produced in a controller").
+ */
+export function calculateGrossPnl(
+  entryPrice: Decimal,
+  exitPrice: Decimal,
+  quantity: number,
+  pointValue: Decimal,
+  direction: Direction,
+): Decimal {
+  assertFiniteDecimal(entryPrice, "entryPrice");
+  assertFiniteDecimal(exitPrice, "exitPrice");
+  assertPositiveDecimal(pointValue, "pointValue");
+  if (!Number.isInteger(quantity) || quantity <= 0) {
+    throw new RiskEngineError("quantity must be a positive integer");
+  }
+
+  const priceDelta = direction === "LONG" ? exitPrice.minus(entryPrice) : entryPrice.minus(exitPrice);
+  return priceDelta.times(pointValue).times(quantity);
+}
+
+/** Gross P&L minus fees. Fees must be non-negative (a fee cannot be a rebate here). */
+export function calculateNetPnl(grossPnl: Decimal, fees: Decimal): Decimal {
+  assertFiniteDecimal(grossPnl, "grossPnl");
+  assertNonNegativeDecimal(fees, "fees");
+
+  return grossPnl.minus(fees);
+}
+
+/**
+ * Net P&L expressed as a multiple of the dollar risk actually taken.
+ * riskAmount must be strictly positive — a trade with zero planned risk
+ * cannot produce a meaningful R multiple.
+ */
+export function calculateRMultiple(netPnl: Decimal, riskAmount: Decimal): Decimal {
+  assertFiniteDecimal(netPnl, "netPnl");
+  assertPositiveDecimal(riskAmount, "riskAmount");
+
+  return netPnl.dividedBy(riskAmount);
 }

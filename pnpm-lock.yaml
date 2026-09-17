@@ -280,6 +280,9 @@ importers:
 
   packages/risk-engine:
     dependencies:
+      '@trading-copilot/shared-types':
+        specifier: workspace:*
+        version: link:../shared-types
       decimal.js:
         specifier: ^10.4.3
         version: 10.6.0

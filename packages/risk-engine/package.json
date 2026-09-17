@@ -12,6 +12,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@trading-copilot/shared-types": "workspace:*",
     "decimal.js": "^10.4.3"
   },
   "devDependencies": {
