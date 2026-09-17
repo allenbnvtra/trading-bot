@@ -1,0 +1,36 @@
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+.next/
+.turbo/
+*.tsbuildinfo
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# os
+.DS_Store
+
+# editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# prisma
+packages/database/prisma/generated/
+
+# test artifacts
+coverage/
+
+# local screenshots (future milestone)
+storage/screenshots/

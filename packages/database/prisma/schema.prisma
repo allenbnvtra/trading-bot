@@ -1,0 +1,241 @@
+// Trading Copilot — Milestone 1 database schema.
+//
+// PostgreSQL is the permanent source of truth (see root CLAUDE.md). Every
+// model here maps field-for-field onto the plain domain interfaces in
+// packages/trading-domain/src/entities.ts — keep them in sync when either
+// changes. Mapping is done in src/mappers.ts, never by leaking these
+// generated Prisma types across the package boundary.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AssetClass {
+  FUTURES
+  FOREX
+  CRYPTO
+  STOCK
+}
+
+enum StrategyVersionStatus {
+  DISCOVERED
+  BACKTESTING
+  VALIDATION
+  OUT_OF_SAMPLE
+  WALK_FORWARD
+  PAPER_TRADING
+  APPROVED
+  PAUSED
+  RETIRED
+}
+
+enum BacktestStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum Direction {
+  LONG
+  SHORT
+}
+
+enum TradeExitReason {
+  STOP
+  TARGET
+  SAME_CANDLE_STOP_AND_TARGET
+  END_OF_DATA
+}
+
+model Instrument {
+  id                    String     @id @default(uuid())
+  symbol                String
+  name                  String
+  assetClass            AssetClass
+  exchange              String
+  currency              String
+  tickSize              Decimal    @db.Decimal(18, 8)
+  tickValue             Decimal    @db.Decimal(18, 8)
+  pointValue            Decimal    @db.Decimal(18, 8)
+  commissionPerContract Decimal    @db.Decimal(18, 8)
+  timezone              String
+  sessionConfiguration  Json
+  createdAt             DateTime   @default(now())
+  updatedAt             DateTime   @updatedAt
+
+  candles        Candle[]
+  backtests      Backtest[]
+  backtestTrades BacktestTrade[]
+
+  @@unique([symbol, exchange])
+}
+
+model Candle {
+  id           String     @id @default(uuid())
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id], onDelete: Cascade)
+
+  // Intentionally a plain String, NOT a Prisma enum. Prisma enum values must
+  // be valid identifiers, and shared-types TIMEFRAMES values ("1m", "5m",
+  // "1h", ...) start with a digit, which Prisma does not allow as an enum
+  // value. Timeframe is validated against TIMEFRAMES from
+  // @trading-copilot/shared-types at the application layer instead — see
+  // src/candle-importer.ts and src/repositories/candles.ts. A CHECK
+  // constraint mirroring TIMEFRAMES could be hand-added via raw SQL in a
+  // future migration if stronger DB-level enforcement is wanted.
+  timeframe String
+
+  timestamp DateTime
+  open      Decimal  @db.Decimal(18, 8)
+  high      Decimal  @db.Decimal(18, 8)
+  low       Decimal  @db.Decimal(18, 8)
+  close     Decimal  @db.Decimal(18, 8)
+  volume    Decimal  @db.Decimal(18, 8)
+
+  @@unique([instrumentId, timeframe, timestamp])
+  @@index([instrumentId, timeframe, timestamp])
+}
+
+model Strategy {
+  id          String   @id @default(uuid())
+  key         String   @unique
+  name        String
+  description String
+  createdAt   DateTime @default(now())
+
+  versions StrategyVersion[]
+}
+
+// StrategyVersion rows are immutable once created — see CLAUDE.md and
+// .claude/agents/data-engineer.md. src/repositories/strategies.ts only ever
+// exposes a `createStrategyVersion` function; there is deliberately no
+// update/mutate function for `parameters` or `version`. A change to a
+// strategy always creates a brand-new version row.
+model StrategyVersion {
+  id          String                @id @default(uuid())
+  strategyId  String
+  strategy    Strategy              @relation(fields: [strategyId], references: [id], onDelete: Cascade)
+  version     String
+  name        String
+  description String
+  parameters  Json
+  status      StrategyVersionStatus
+  createdAt   DateTime              @default(now())
+
+  backtests      Backtest[]
+  backtestTrades BacktestTrade[]
+
+  @@unique([strategyId, version])
+}
+
+model Backtest {
+  id                String          @id @default(uuid())
+  strategyVersionId String
+  strategyVersion   StrategyVersion @relation(fields: [strategyVersionId], references: [id])
+  instrumentId      String
+  instrument        Instrument      @relation(fields: [instrumentId], references: [id])
+
+  // See Candle.timeframe note above — plain String, validated against
+  // TIMEFRAMES at the application layer.
+  timeframe String
+
+  startDate DateTime
+  endDate   DateTime
+
+  status BacktestStatus @default(QUEUED)
+
+  // Shape (see BacktestAssumptions in packages/trading-domain):
+  // { commissionPerContract: string, slippageTicks: number, riskPercentage: string, initialBalance: string }
+  assumptions Json
+
+  startedAt    DateTime?
+  completedAt  DateTime?
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+
+  trades  BacktestTrade[]
+  metrics BacktestMetrics?
+}
+
+model BacktestTrade {
+  id                String          @id @default(uuid())
+  backtestId        String
+  backtest          Backtest        @relation(fields: [backtestId], references: [id], onDelete: Cascade)
+  strategyVersionId String
+  strategyVersion   StrategyVersion @relation(fields: [strategyVersionId], references: [id])
+  instrumentId      String
+  instrument        Instrument      @relation(fields: [instrumentId], references: [id])
+
+  direction Direction
+
+  signalTimestamp DateTime
+
+  entryTimestamp DateTime
+  entryPrice     Decimal  @db.Decimal(18, 8)
+
+  stopPrice   Decimal @db.Decimal(18, 8)
+  targetPrice Decimal @db.Decimal(18, 8)
+
+  exitTimestamp DateTime
+  exitPrice     Decimal  @db.Decimal(18, 8)
+
+  entryReason String
+  exitReason  TradeExitReason
+
+  quantity Int
+
+  grossPnl Decimal @db.Decimal(18, 8)
+  fees     Decimal @db.Decimal(18, 8)
+  netPnl   Decimal @db.Decimal(18, 8)
+
+  riskAmount Decimal @db.Decimal(18, 8)
+  rMultiple  Decimal @db.Decimal(18, 8)
+
+  maximumFavorableExcursion Decimal @db.Decimal(18, 8)
+  maximumAdverseExcursion  Decimal @db.Decimal(18, 8)
+
+  @@index([backtestId])
+}
+
+model BacktestMetrics {
+  id         String   @id @default(uuid())
+  backtestId String   @unique
+  backtest   Backtest @relation(fields: [backtestId], references: [id], onDelete: Cascade)
+
+  totalTrades   Int
+  winningTrades Int
+  losingTrades  Int
+
+  winRate Decimal @db.Decimal(9, 6)
+
+  grossProfit Decimal @db.Decimal(18, 8)
+  grossLoss   Decimal @db.Decimal(18, 8)
+  netProfit   Decimal @db.Decimal(18, 8)
+
+  // Null means "undefined" (no losing trades) — never faked as 0 or Infinity.
+  profitFactor Decimal? @db.Decimal(18, 8)
+
+  averageTrade Decimal @db.Decimal(18, 8)
+  averageR     Decimal @db.Decimal(18, 8)
+
+  largestWin  Decimal @db.Decimal(18, 8)
+  largestLoss Decimal @db.Decimal(18, 8)
+
+  averageWin  Decimal @db.Decimal(18, 8)
+  averageLoss Decimal @db.Decimal(18, 8)
+
+  maxDrawdown        Decimal @db.Decimal(18, 8)
+  maxDrawdownPercent Decimal @db.Decimal(18, 8)
+
+  expectancy Decimal @db.Decimal(18, 8)
+
+  maximumConsecutiveWins   Int
+  maximumConsecutiveLosses Int
+}
