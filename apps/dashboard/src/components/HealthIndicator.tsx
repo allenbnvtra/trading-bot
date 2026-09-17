@@ -1,4 +1,5 @@
-import { ApiError, getHealth } from "@/lib/api";
+import { ApiError, getHealth, type TradingViewIngestionHealth } from "@/lib/api";
+import { formatDateTime } from "@/lib/format";
 
 function Dot({ up }: { up: boolean }) {
   return (
@@ -10,6 +11,12 @@ function Dot({ up }: { up: boolean }) {
     </span>
   );
 }
+
+const INGESTION_BADGE_CLASS: Record<TradingViewIngestionHealth["status"], string> = {
+  ONLINE: "badge--completed",
+  DEGRADED: "badge--failed",
+  UNKNOWN: "badge--neutral",
+};
 
 export default async function HealthIndicator() {
   try {
@@ -38,6 +45,26 @@ export default async function HealthIndicator() {
             <div className="detail-item__label">Redis</div>
             <div className="detail-item__value">
               <Dot up={health.redis === "up"} />
+            </div>
+          </div>
+          <div className="detail-item">
+            <div className="detail-item__label">TradingView Ingestion</div>
+            <div className="detail-item__value">
+              <span className={`badge ${INGESTION_BADGE_CLASS[health.tradingViewIngestion.status]}`}>
+                {health.tradingViewIngestion.status}
+              </span>
+            </div>
+          </div>
+          <div className="detail-item">
+            <div className="detail-item__label">Last Webhook Received</div>
+            <div className="detail-item__value">
+              {formatDateTime(health.tradingViewIngestion.lastEventAt)}
+            </div>
+          </div>
+          <div className="detail-item">
+            <div className="detail-item__label">Last Successful Processing</div>
+            <div className="detail-item__value">
+              {formatDateTime(health.tradingViewIngestion.lastSuccessfulProcessingAt)}
             </div>
           </div>
         </div>

@@ -28,6 +28,10 @@ export default function DashboardHomePage() {
       <div className="card">
         <h2>Quick links</h2>
         <div className="quick-links">
+          <Link href="/live-setups" className="quick-link">
+            <div className="quick-link__title">Live Setups</div>
+            <div className="quick-link__desc">Watch TradingView-sourced setups arrive in real time.</div>
+          </Link>
           <Link href="/research" className="quick-link">
             <div className="quick-link__title">Research</div>
             <div className="quick-link__desc">Run a backtest and inspect its trades.</div>

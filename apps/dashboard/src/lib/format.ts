@@ -97,6 +97,25 @@ export function formatDate(iso: string | null | undefined): string {
   });
 }
 
+/**
+ * Formats the elapsed time between two ISO timestamps, e.g. "340ms" or
+ * "2.1s". This is a plain duration display, not a financial calculation -
+ * both timestamps already come straight from the API.
+ */
+export function formatDurationBetween(
+  startIso: string | null | undefined,
+  endIso: string | null | undefined,
+): string {
+  if (!startIso || !endIso) return MISSING;
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return MISSING;
+  const ms = end - start;
+  if (ms < 0) return MISSING;
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
 /** Returns "positive" | "negative" | "neutral" for styling already-computed values. */
 export function signOf(value: string | null | undefined): "positive" | "negative" | "neutral" {
   const num = toNumber(value);

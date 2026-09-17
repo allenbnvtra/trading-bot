@@ -5,7 +5,9 @@ import type {
   JournalEventType,
   JournalTradeStatus,
   NormalizedTradeSource,
+  SetupSource,
   SetupStatus,
+  WebhookProcessingStatus,
 } from "@/lib/api";
 
 const STATUS_CLASS: Record<BacktestStatus, string> = {
@@ -39,6 +41,32 @@ const SETUP_STATUS_CLASS: Record<SetupStatus, string> = {
 
 export function SetupStatusBadge({ status }: { status: SetupStatus }) {
   return <span className={`badge ${SETUP_STATUS_CLASS[status]}`}>{status}</span>;
+}
+
+const SETUP_SOURCE_CLASS: Record<SetupSource, string> = {
+  BACKTEST: "badge--neutral",
+  MANUAL_TEST: "badge--neutral",
+  SYSTEM: "badge--neutral",
+  TRADINGVIEW: "badge--info",
+};
+
+export function SetupSourceBadge({ source }: { source: SetupSource }) {
+  return <span className={`badge ${SETUP_SOURCE_CLASS[source]}`}>{source}</span>;
+}
+
+const WEBHOOK_PROCESSING_STATUS_CLASS: Record<WebhookProcessingStatus, string> = {
+  RECEIVED: "badge--neutral",
+  QUEUED: "badge--queued",
+  PROCESSING: "badge--running",
+  PROCESSED: "badge--success",
+  DUPLICATE: "badge--warning",
+  REJECTED: "badge--danger",
+  FAILED: "badge--danger",
+  UNSUPPORTED: "badge--warning",
+};
+
+export function WebhookProcessingStatusBadge({ status }: { status: WebhookProcessingStatus }) {
+  return <span className={`badge ${WEBHOOK_PROCESSING_STATUS_CLASS[status]}`}>{status}</span>;
 }
 
 const JOURNAL_TRADE_STATUS_CLASS: Record<JournalTradeStatus, string> = {
@@ -86,6 +114,12 @@ const EVENT_TYPE_CLASS: Record<JournalEventType, string> = {
   TRADE_CLOSED: "badge--success",
   POST_TRADE_ANALYSIS_CREATED: "badge--info",
   STRATEGY_VERSION_PROPOSED: "badge--warning",
+  WEBHOOK_RECEIVED: "badge--neutral",
+  WEBHOOK_NORMALIZED: "badge--info",
+  SIGNAL_ACCEPTED: "badge--success",
+  WEBHOOK_DUPLICATE_DETECTED: "badge--warning",
+  WEBHOOK_REJECTED: "badge--danger",
+  WEBHOOK_PROCESSING_FAILED: "badge--danger",
 };
 
 export function EventTypeBadge({ eventType }: { eventType: JournalEventType }) {
@@ -106,4 +140,10 @@ export const EVENT_TYPE_LABELS: Record<JournalEventType, string> = {
   TRADE_CLOSED: "Trade Closed",
   POST_TRADE_ANALYSIS_CREATED: "Post-Trade Analysis",
   STRATEGY_VERSION_PROPOSED: "Strategy Version Proposed",
+  WEBHOOK_RECEIVED: "Webhook Received",
+  WEBHOOK_NORMALIZED: "Webhook Normalized",
+  SIGNAL_ACCEPTED: "Signal Accepted",
+  WEBHOOK_DUPLICATE_DETECTED: "Webhook Duplicate Detected",
+  WEBHOOK_REJECTED: "Webhook Rejected",
+  WEBHOOK_PROCESSING_FAILED: "Webhook Processing Failed",
 };

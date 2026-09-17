@@ -22,6 +22,7 @@ const ENTITY_TYPES: JournalEntityType[] = [
   "BACKTEST_TRADE",
   "STRATEGY_VERSION",
   "POST_TRADE_ANALYSIS",
+  "INBOUND_WEBHOOK_EVENT",
 ];
 
 const EVENT_TYPES = Object.keys(EVENT_TYPE_LABELS) as JournalEventType[];
@@ -148,11 +149,19 @@ export default async function JournalPage({
                     </td>
                     <td>{event.entityType}</td>
                     <td>
-                      {event.entityType === "JOURNAL_TRADE" ? (
+                      {event.entityType === "JOURNAL_TRADE" && (
                         <Link href={`/trades/${event.entityId}`}>{event.entityId}</Link>
-                      ) : (
-                        event.entityId
                       )}
+                      {event.entityType === "SETUP" && (
+                        <Link href={`/setups/${event.entityId}`}>{event.entityId}</Link>
+                      )}
+                      {event.entityType === "INBOUND_WEBHOOK_EVENT" && (
+                        <Link href={`/webhook-events/${event.entityId}`}>{event.entityId}</Link>
+                      )}
+                      {event.entityType !== "JOURNAL_TRADE" &&
+                        event.entityType !== "SETUP" &&
+                        event.entityType !== "INBOUND_WEBHOOK_EVENT" &&
+                        event.entityId}
                     </td>
                     <td>{event.correlationId ?? "N/A"}</td>
                   </tr>

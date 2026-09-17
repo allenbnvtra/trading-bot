@@ -5,12 +5,13 @@ import { usePathname } from "next/navigation";
 
 const LINKS: { href: string; label: string }[] = [
   { href: "/", label: "Dashboard" },
+  { href: "/live-setups", label: "Live Setups" },
   { href: "/research", label: "Research" },
+  { href: "/strategies", label: "Strategies" },
+  { href: "/backtests", label: "Backtests" },
   { href: "/journal", label: "Journal" },
   { href: "/trades", label: "Trades" },
   { href: "/analytics", label: "Analytics" },
-  { href: "/strategies", label: "Strategies" },
-  { href: "/backtests", label: "Backtests" },
   { href: "/market-data", label: "Market Data" },
 ];
 

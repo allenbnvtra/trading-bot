@@ -26,10 +26,17 @@ export type StrategyVersionStatus =
 
 export const TIMEFRAMES: Timeframe[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
 
+export interface TradingViewIngestionHealth {
+  status: "ONLINE" | "DEGRADED" | "UNKNOWN";
+  lastEventAt: string | null;
+  lastSuccessfulProcessingAt: string | null;
+}
+
 export interface HealthResponse {
   status: "ok" | "degraded";
   postgres: "up" | "down";
   redis: "up" | "down";
+  tradingViewIngestion: TradingViewIngestionHealth;
 }
 
 export interface Instrument {
@@ -200,7 +207,13 @@ export type JournalEventType =
   | "TRADE_SKIPPED"
   | "TRADE_CLOSED"
   | "POST_TRADE_ANALYSIS_CREATED"
-  | "STRATEGY_VERSION_PROPOSED";
+  | "STRATEGY_VERSION_PROPOSED"
+  | "WEBHOOK_RECEIVED"
+  | "WEBHOOK_NORMALIZED"
+  | "SIGNAL_ACCEPTED"
+  | "WEBHOOK_DUPLICATE_DETECTED"
+  | "WEBHOOK_REJECTED"
+  | "WEBHOOK_PROCESSING_FAILED";
 
 export type JournalEntityType =
   | "SETUP"
@@ -210,10 +223,11 @@ export type JournalEntityType =
   | "BACKTEST"
   | "BACKTEST_TRADE"
   | "STRATEGY_VERSION"
-  | "POST_TRADE_ANALYSIS";
+  | "POST_TRADE_ANALYSIS"
+  | "INBOUND_WEBHOOK_EVENT";
 
 export type SetupStatus = "WATCH" | "PREPARE" | "READY" | "REJECTED" | "INVALIDATED" | "EXPIRED";
-export type SetupSource = "BACKTEST" | "MANUAL_TEST" | "SYSTEM";
+export type SetupSource = "BACKTEST" | "MANUAL_TEST" | "SYSTEM" | "TRADINGVIEW";
 export type ExecutionMode = "BACKTEST" | "PAPER" | "MANUAL_LIVE" | "SKIPPED";
 export type JournalTradeStatus = "PLANNED" | "OPEN" | "CLOSED" | "SKIPPED";
 export type NormalizedTradeSource = "BACKTEST" | "JOURNAL";
@@ -251,8 +265,10 @@ export interface Setup {
   direction: Direction;
   source: SetupSource;
   plannedEntry: string;
-  plannedStop: string;
-  plannedTarget1: string;
+  /** Null for a TradingView-sourced Setup until a RiskCalculation supplies one. Never fabricate a value here - render "not set". */
+  plannedStop: string | null;
+  /** Same nullability note as plannedStop. */
+  plannedTarget1: string | null;
   plannedTarget2: string | null;
   status: SetupStatus;
   decisionSummary: string | null;
@@ -260,6 +276,37 @@ export interface Setup {
   createdAt: string;
   updatedAt: string;
   expiresAt: string | null;
+}
+
+export interface SetupListFilters {
+  instrumentId?: string;
+  strategyId?: string;
+  strategyVersionId?: string;
+  status?: SetupStatus;
+  source?: SetupSource;
+  direction?: Direction;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+/**
+ * Immutable "what the market looked like" context a Setup points at. A
+ * TradingView-sourced Setup's timeframe/bar time live here, not on the
+ * Setup itself - see packages/trading-domain's MarketSnapshot.
+ */
+export interface MarketSnapshot {
+  id: string;
+  instrumentId: string;
+  /** The market bar this snapshot is about (e.g. the alert's OHLCV bar close time) - distinct from when our system received/created anything. */
+  timestamp: string;
+  timeframe: string;
+  atr: string | null;
+  volume: string | null;
+  vwap: string | null;
+  session: string | null;
+  marketRegime: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
 }
 
 export interface JournalTrade {
@@ -497,12 +544,20 @@ export function getJournalEvents(filters: JournalEventFilters = {}): Promise<Jou
   return apiFetch<JournalEvent[]>(`/journal/events${toQueryString(filters)}`);
 }
 
+export function getSetups(filters: SetupListFilters = {}): Promise<Setup[]> {
+  return apiFetch<Setup[]>(`/setups${toQueryString(filters)}`);
+}
+
 export function getSetup(id: string): Promise<Setup> {
   return apiFetch<Setup>(`/setups/${id}`);
 }
 
 export function getSetupTimeline(id: string): Promise<JournalEvent[]> {
   return apiFetch<JournalEvent[]>(`/setups/${id}/timeline`);
+}
+
+export function getMarketSnapshot(id: string): Promise<MarketSnapshot> {
+  return apiFetch<MarketSnapshot>(`/market-snapshots/${id}`);
 }
 
 export function getJournalTrades(filters: JournalTradeFilters = {}): Promise<JournalTrade[]> {
@@ -525,3 +580,101 @@ export function getAnalyticsStrategyVersionDetail(
     `/analytics/strategies/${strategyId}/versions/${versionId}`,
   );
 }
+
+// --- Milestone 3: TradingView webhook ingestion admin/inspection --------
+
+export type WebhookProvider = "TRADINGVIEW";
+
+export type WebhookProcessingStatus =
+  | "RECEIVED"
+  | "QUEUED"
+  | "PROCESSING"
+  | "PROCESSED"
+  | "DUPLICATE"
+  | "REJECTED"
+  | "FAILED"
+  | "UNSUPPORTED";
+
+/**
+ * Known failure codes the ingestion pipeline itself produces. Stored as a
+ * plain string on the API side (not a DB enum), so an unanticipated value
+ * is rendered as-is rather than dropped - see failureCode's type below.
+ */
+export type WebhookFailureCode =
+  | "UNSUPPORTED_SCHEMA_VERSION"
+  | "MALFORMED_PAYLOAD"
+  | "UNSUPPORTED_SIGNAL_TYPE"
+  | "UNSUPPORTED_TIMEFRAME"
+  | "UNKNOWN_INSTRUMENT"
+  | "UNKNOWN_STRATEGY_VERSION"
+  | "INTERNAL_ERROR";
+
+/**
+ * The durable record of one physical webhook delivery. rawPayload/
+ * normalizedPayload are already sanitized of secrets at the source (see
+ * docs/tradingview-security.md) - nothing further needs to be redacted
+ * here, only rendered readably.
+ */
+export interface InboundWebhookEvent {
+  id: string;
+  provider: WebhookProvider;
+  receivedAt: string;
+  schemaVersion: number;
+  rawPayload: Record<string, unknown>;
+  normalizedPayload: Record<string, unknown> | null;
+  fingerprint: string;
+  processingStatus: WebhookProcessingStatus;
+  processingStartedAt: string | null;
+  processingCompletedAt: string | null;
+  failureCode: WebhookFailureCode | string | null;
+  failureMessage: string | null;
+  setupId: string | null;
+  createdAt: string;
+}
+
+export interface WebhookEventListFilters {
+  provider?: WebhookProvider;
+  processingStatus?: WebhookProcessingStatus;
+  setupId?: string;
+  dateFrom?: string;
+  dateTo?: string;
+}
+
+export function getWebhookEvents(
+  filters: WebhookEventListFilters = {},
+): Promise<InboundWebhookEvent[]> {
+  return apiFetch<InboundWebhookEvent[]>(`/webhooks/tradingview/events${toQueryString(filters)}`);
+}
+
+export function getWebhookEvent(id: string): Promise<InboundWebhookEvent> {
+  return apiFetch<InboundWebhookEvent>(`/webhooks/tradingview/events/${id}`);
+}
+
+export function getWebhookEventTimeline(id: string): Promise<JournalEvent[]> {
+  return apiFetch<JournalEvent[]>(`/webhooks/tradingview/events/${id}/timeline`);
+}
+
+// --- Milestone 3: realtime notifications ---------------------------------
+//
+// Mirrors packages/shared-types/src/realtime.ts's RealtimeEvent shape by
+// hand, same as every other type in this file - the dashboard never adds a
+// workspace dependency on @trading-copilot/shared-types, it stays decoupled
+// and mirrors whatever shape the API/WebSocket actually sends.
+
+export interface WebhookReceivedRealtimeEvent {
+  type: "webhook.received";
+  timestamp: string;
+  webhookEventId: string;
+  provider: string;
+}
+
+export interface SetupRealtimeEvent {
+  type: "setup.created" | "setup.updated" | "setup.expired" | "setup.invalidated" | "setup.rejected";
+  timestamp: string;
+  setupId: string;
+  instrumentId: string;
+  status: SetupStatus;
+  direction: Direction;
+}
+
+export type RealtimeEvent = WebhookReceivedRealtimeEvent | SetupRealtimeEvent;
