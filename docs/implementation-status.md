@@ -2,6 +2,8 @@
 
 Living progress tracker for Milestone 1. Update as work lands; do not let this drift from reality.
 
+**Milestone 1: COMPLETE.** All quality gates pass (lint/typecheck/test/build), the full vertical slice is verified end-to-end against a live Postgres/Redis (real backtest via HTTP, deterministic rerun confirmed, QUEUED->COMPLETED transition observed live in the dashboard), and independent architecture/research-methodology/quality reviews all returned GO with zero BLOCKER/HIGH findings.
+
 ## Completed
 
 - Claude Code configuration: root `CLAUDE.md`, `.claude/agents/*.md` (system-architect, quant-engineer, data-engineer, backend-engineer, frontend-engineer, platform-engineer, research-methodologist, journal-analyst, quality-reviewer).
@@ -14,16 +16,17 @@ Living progress tracker for Milestone 1. Update as work lands; do not let this d
 - `packages/backtester`: deterministic backtest engine + metrics (next-bar entry, conservative same-candle stop/target, slippage/commissions/MFE/MAE) — 22 tests, including a determinism check.
 - `apps/api`: NestJS (Health/Instrument/MarketData/Strategy/Backtest modules), Zod validation pipe, BullMQ producer — verified end-to-end against live Postgres/Redis (created and completed a real backtest via HTTP, 33 trades + computed metrics; a second identical run produced byte-identical trades/metrics).
 - `apps/worker`: BullMQ consumer running `packages/backtester`, idempotent on retry (transactional replace).
+- `apps/dashboard`: Next.js research UI — Dashboard/Research/Strategies/Backtests/Market Data nav, create-backtest form, live status polling, metrics/trades table, trade detail with surrounding candles, CSV import form. Verified rendering against the live API via headless Chromium.
 - Documentation: `docs/architecture.md`, `docs/backtesting-assumptions.md`, `docs/research-methodology.md`, `docs/trade-journal-design.md`, `docs/screenshot-design.md`, `docs/roadmap.md`, `README.md`.
+- Final review pass: system-architect (no blockers), research-methodologist (no blockers; independently re-derived the backtest result to confirm it's honest and untuned), quality-reviewer (GO; 0 BLOCKER/HIGH, 1 MEDIUM + 2 LOW, all addressed — see "Known decisions").
 
 ## In progress
 
-- `apps/dashboard`: Next.js research UI (strategy/backtest overview, trades table, trade detail with surrounding candles).
+(none — Milestone 1 complete)
 
 ## Remaining
 
-- Final workspace-wide install, build, lint, typecheck, test verification once the dashboard lands.
-- Architecture review (system-architect), research-methodology review (research-methodologist), final quality review (quality-reviewer).
+(none for Milestone 1 — see `docs/roadmap.md` for Milestone 2+)
 
 ## Known decisions
 
@@ -33,10 +36,12 @@ Living progress tracker for Milestone 1. Update as work lands; do not let this d
 - Test runner is Vitest across every package and app for a coherent toolchain, including the NestJS apps (`@nestjs/testing` has no Jest-specific dependency).
 - BullMQ queue name `"backtest-run"`, job name `"run"`, payload `{ backtestId }` only — the worker re-fetches everything else from Postgres so the job payload never goes stale relative to the DB.
 - Same-candle stop-and-target exits apply the same adverse slippage as a plain STOP exit, for consistency (fixed after an initial pass omitted it).
+- `initialBalance`, `tickSize`, `tickValue`, `pointValue` reject a zero value at the API/schema boundary (synchronous 400) rather than only failing later inside `packages/risk-engine`; `commissionPerContract` and `riskPercentage` still legitimately allow zero. `POST /backtests` also rejects `startDate >= endDate`.
+- The dashboard's Research pages show a persistent banner noting the synthetic data and untuned strategy parameters, so that context isn't only discoverable in `docs/`.
 
 ## Known blockers
 
-(none yet — update as they appear)
+(none)
 
 ## Local environment notes
 
