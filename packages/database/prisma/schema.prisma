@@ -69,12 +69,13 @@ model Instrument {
   createdAt             DateTime   @default(now())
   updatedAt             DateTime   @updatedAt
 
-  candles         Candle[]
-  backtests       Backtest[]
-  backtestTrades  BacktestTrade[]
-  marketSnapshots MarketSnapshot[]
-  setups          Setup[]
-  journalTrades   JournalTrade[]
+  candles                       Candle[]
+  backtests                     Backtest[]
+  backtestTrades                BacktestTrade[]
+  marketSnapshots               MarketSnapshot[]
+  setups                        Setup[]
+  journalTrades                 JournalTrade[]
+  tradingViewInstrumentMappings TradingViewInstrumentMapping[]
 
   @@unique([symbol, exchange])
 }
@@ -206,7 +207,7 @@ model BacktestTrade {
   rMultiple  Decimal @db.Decimal(18, 8)
 
   maximumFavorableExcursion Decimal @db.Decimal(18, 8)
-  maximumAdverseExcursion  Decimal @db.Decimal(18, 8)
+  maximumAdverseExcursion   Decimal @db.Decimal(18, 8)
 
   @@index([backtestId])
 }
@@ -267,6 +268,7 @@ enum SetupSource {
   BACKTEST
   MANUAL_TEST
   SYSTEM
+  TRADINGVIEW
 }
 
 enum ExecutionMode {
@@ -340,6 +342,16 @@ enum JournalEventType {
   TRADE_CLOSED
   POST_TRADE_ANALYSIS_CREATED
   STRATEGY_VERSION_PROPOSED
+  // Milestone 3 — TradingView webhook ingestion, correlated on the
+  // InboundWebhookEvent's own id (not a Setup's) until SIGNAL_ACCEPTED,
+  // which references the Setup that was created. See
+  // docs/tradingview-setup.md.
+  WEBHOOK_RECEIVED
+  WEBHOOK_NORMALIZED
+  SIGNAL_ACCEPTED
+  WEBHOOK_DUPLICATE_DETECTED
+  WEBHOOK_REJECTED
+  WEBHOOK_PROCESSING_FAILED
 }
 
 enum JournalEntityType {
@@ -351,11 +363,27 @@ enum JournalEntityType {
   BACKTEST_TRADE
   STRATEGY_VERSION
   POST_TRADE_ANALYSIS
+  INBOUND_WEBHOOK_EVENT
 }
 
 enum ScreenshotType {
   PRE_TRADE
   POST_TRADE
+}
+
+enum WebhookProvider {
+  TRADINGVIEW
+}
+
+enum WebhookProcessingStatus {
+  RECEIVED
+  QUEUED
+  PROCESSING
+  PROCESSED
+  DUPLICATE
+  REJECTED
+  FAILED
+  UNSUPPORTED
 }
 
 // Immutable once created — packages/database exposes no update function for
@@ -412,6 +440,12 @@ model MarketSnapshot {
 // StrategyVersion-style immutability: no update/mutate function exists in
 // packages/database for parameters other than `status` (the state machine
 // itself). Status transitions are validated in apps/api's setup service.
+//
+// plannedStop/plannedTarget1 are nullable (Milestone 3): a TRADINGVIEW-
+// sourced setup often begins with only a candidate entry (the alert bar's
+// close) — the stop/target genuinely aren't known yet, and "unknown
+// information must remain unknown" rather than fabricated. plannedEntry
+// stays required — always a real observed price at creation time.
 model Setup {
   id String @id @default(uuid())
 
@@ -431,8 +465,8 @@ model Setup {
   source    SetupSource
 
   plannedEntry   Decimal  @db.Decimal(18, 8)
-  plannedStop    Decimal  @db.Decimal(18, 8)
-  plannedTarget1 Decimal  @db.Decimal(18, 8)
+  plannedStop    Decimal? @db.Decimal(18, 8)
+  plannedTarget1 Decimal? @db.Decimal(18, 8)
   plannedTarget2 Decimal? @db.Decimal(18, 8)
 
   status          SetupStatus @default(WATCH)
@@ -444,9 +478,10 @@ model Setup {
   updatedAt DateTime  @updatedAt
   expiresAt DateTime?
 
-  riskCalculations RiskCalculation[]
-  journalTrades    JournalTrade[]
-  screenshots      TradeScreenshot[]
+  riskCalculations     RiskCalculation[]
+  journalTrades        JournalTrade[]
+  screenshots          TradeScreenshot[]
+  inboundWebhookEvents InboundWebhookEvent[]
 
   @@index([instrumentId, status])
   @@index([strategyVersionId])
@@ -461,7 +496,7 @@ model RiskCalculation {
   setupId String
   setup   Setup  @relation(fields: [setupId], references: [id], onDelete: Cascade)
 
-  accountEquity Decimal @db.Decimal(18, 8)
+  accountEquity  Decimal @db.Decimal(18, 8)
   riskPercentage Decimal @db.Decimal(9, 6)
   riskBudget     Decimal @db.Decimal(18, 8)
 
@@ -624,5 +659,73 @@ model TradeScreenshot {
   createdAt DateTime @default(now())
 
   @@index([tradeId, tradeSource])
+  @@index([setupId])
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 3 — TradingView webhook ingestion (see docs/tradingview-setup.md).
+// PostgreSQL remains the only source of truth; Redis (BullMQ + the realtime
+// pub/sub channel) is ephemeral. Everything here is additive to Milestone 2.
+// ---------------------------------------------------------------------------
+
+// Explicit exchange+symbol -> Instrument mapping. A webhook naming an
+// unmapped symbol is REJECTED (UNKNOWN_INSTRUMENT) — never auto-created,
+// never fuzzy-matched.
+model TradingViewInstrumentMapping {
+  id String @id @default(uuid())
+
+  exchange String
+  symbol   String
+
+  instrumentId String
+  instrument   Instrument @relation(fields: [instrumentId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([exchange, symbol])
+}
+
+// The durable record of one physical webhook delivery. `fingerprint` is the
+// actual idempotency guarantee (unique constraint — a duplicate delivery
+// cannot even be inserted). Everything except the processing-lifecycle
+// fields (processingStatus/processingStartedAt/processingCompletedAt/
+// failureCode/failureMessage/setupId/normalizedPayload) is set once at
+// creation and never changed — packages/database exposes no function that
+// mutates provider/receivedAt/schemaVersion/rawPayload/fingerprint.
+model InboundWebhookEvent {
+  id String @id @default(uuid())
+
+  provider      WebhookProvider
+  receivedAt    DateTime        @default(now())
+  schemaVersion Int
+
+  // Never put credentials in a webhook alert message — see
+  // docs/tradingview-security.md. This column stores exactly what was
+  // received (parsed JSON), for audit.
+  rawPayload Json
+
+  // Populated once normalization succeeds; null before that or if it never
+  // succeeded (REJECTED/UNSUPPORTED).
+  normalizedPayload Json?
+
+  fingerprint String @unique
+
+  processingStatus      WebhookProcessingStatus @default(RECEIVED)
+  processingStartedAt   DateTime?
+  processingCompletedAt DateTime?
+
+  // Freeform string, not a DB enum (see shared-types WEBHOOK_FAILURE_CODES)
+  // so a genuinely unanticipated failure can still record a useful message
+  // without a migration.
+  failureCode    String?
+  failureMessage String?
+
+  setupId String?
+  setup   Setup?  @relation(fields: [setupId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@index([provider, receivedAt])
+  @@index([processingStatus])
   @@index([setupId])
 }

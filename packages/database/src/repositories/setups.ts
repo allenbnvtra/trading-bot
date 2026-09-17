@@ -29,8 +29,9 @@ export interface CreateSetupInput {
   direction: Direction;
   source: SetupSource;
   plannedEntry: Decimal;
-  plannedStop: Decimal;
-  plannedTarget1: Decimal;
+  /** Nullable (Milestone 3): a TRADINGVIEW-sourced setup often doesn't know its stop/target yet. */
+  plannedStop?: Decimal | null;
+  plannedTarget1?: Decimal | null;
   plannedTarget2?: Decimal | null;
   decisionSummary?: string | null;
   metadata?: Record<string, unknown>;
@@ -53,8 +54,8 @@ export async function createSetup(input: CreateSetupInput): Promise<Setup> {
         direction: input.direction,
         source: input.source,
         plannedEntry: input.plannedEntry.toString(),
-        plannedStop: input.plannedStop.toString(),
-        plannedTarget1: input.plannedTarget1.toString(),
+        plannedStop: input.plannedStop?.toString() ?? null,
+        plannedTarget1: input.plannedTarget1?.toString() ?? null,
         plannedTarget2: input.plannedTarget2?.toString() ?? null,
         decisionSummary: input.decisionSummary ?? null,
         metadata: (input.metadata ?? {}) as Prisma.InputJsonValue,

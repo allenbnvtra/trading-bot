@@ -69,6 +69,14 @@ export interface MarketSnapshot {
  * A candidate trade, pending human (or, in a later milestone, agent) review.
  * The state machine (see SETUP_STATUSES / TERMINAL_SETUP_STATUSES in
  * shared-types) is enforced by apps/api's setup service, not by the schema.
+ *
+ * plannedStop/plannedTarget1 are nullable (Milestone 3): a MANUAL_TEST or
+ * BACKTEST-sourced setup normally supplies a fully-planned trade up front,
+ * but a TRADINGVIEW-sourced setup often begins with only a candidate entry
+ * (the alert bar's close) — the stop/target genuinely aren't known yet, and
+ * "unknown information must remain unknown" rather than fabricated (see
+ * docs/tradingview-setup.md). plannedEntry stays required — it is always a
+ * real observed price at the moment the setup is created, from any source.
  */
 export interface Setup {
   id: string;
@@ -79,8 +87,8 @@ export interface Setup {
   direction: Direction;
   source: SetupSource;
   plannedEntry: Decimal;
-  plannedStop: Decimal;
-  plannedTarget1: Decimal;
+  plannedStop: Decimal | null;
+  plannedTarget1: Decimal | null;
   plannedTarget2: Decimal | null;
   status: SetupStatus;
   decisionSummary: string | null;

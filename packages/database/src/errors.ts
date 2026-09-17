@@ -41,3 +41,20 @@ export class JournalTradeStateError extends Error {
     Object.setPrototypeOf(this, JournalTradeStateError.prototype);
   }
 }
+
+/**
+ * Thrown by createRiskCalculation when the Setup it targets has no
+ * plannedStop and/or plannedTarget1 yet (Milestone 3: a TRADINGVIEW-sourced
+ * setup can begin with only a candidate entry). A risk calculation is
+ * mathematically undefined without a stop/target — this is a clear,
+ * typed rejection rather than a null-dereference crash.
+ */
+export class SetupIncompletePlanError extends Error {
+  constructor(setupId: string, missingFields: string[]) {
+    super(
+      `cannot calculate risk for Setup ${setupId}: missing ${missingFields.join(", ")} — this setup's trade plan is not fully specified yet`,
+    );
+    this.name = "SetupIncompletePlanError";
+    Object.setPrototypeOf(this, SetupIncompletePlanError.prototype);
+  }
+}

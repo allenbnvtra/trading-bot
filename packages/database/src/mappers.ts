@@ -443,8 +443,8 @@ export interface PrismaSetupRow {
   direction: Direction;
   source: SetupSource;
   plannedEntry: Decimalish;
-  plannedStop: Decimalish;
-  plannedTarget1: Decimalish;
+  plannedStop: Decimalish | null;
+  plannedTarget1: Decimalish | null;
   plannedTarget2: Decimalish | null;
   status: SetupStatus;
   decisionSummary: string | null;
@@ -464,8 +464,8 @@ export function mapSetup(row: PrismaSetupRow): Setup {
     direction: row.direction,
     source: row.source,
     plannedEntry: toDomainDecimal(row.plannedEntry),
-    plannedStop: toDomainDecimal(row.plannedStop),
-    plannedTarget1: toDomainDecimal(row.plannedTarget1),
+    plannedStop: toNullableDomainDecimal(row.plannedStop),
+    plannedTarget1: toNullableDomainDecimal(row.plannedTarget1),
     plannedTarget2: toNullableDomainDecimal(row.plannedTarget2),
     status: row.status,
     decisionSummary: row.decisionSummary,

@@ -57,7 +57,18 @@ describe("createSetupSchema", () => {
   });
 
   it("rejects an invalid source", () => {
-    expect(createSetupSchema.safeParse({ ...valid, source: "TRADINGVIEW" }).success).toBe(false);
+    // TRADINGVIEW is a real, valid source (Milestone 3) — use a genuinely
+    // unsupported value here instead.
+    expect(createSetupSchema.safeParse({ ...valid, source: "TRADESTATION" }).success).toBe(false);
+  });
+
+  it("accepts a TRADINGVIEW-sourced setup with no plannedStop/plannedTarget1 yet", () => {
+    const { plannedStop: _plannedStop, plannedTarget1: _plannedTarget1, ...withoutStopTarget } = valid;
+    const result = createSetupSchema.safeParse({
+      ...withoutStopTarget,
+      source: "TRADINGVIEW",
+    });
+    expect(result.success).toBe(true);
   });
 
   it("accepts an optional plannedTarget2", () => {

@@ -9,7 +9,7 @@ import {
 } from "@trading-copilot/risk-engine";
 import type { RiskCalculation } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
-import { NotFoundError } from "../errors";
+import { NotFoundError, SetupIncompletePlanError } from "../errors";
 import { mapRiskCalculation } from "../mappers";
 import { createJournalEvent } from "./journal-events";
 
@@ -113,6 +113,19 @@ export async function createRiskCalculation(
   const instrument = await prisma.instrument.findUnique({ where: { id: setup.instrumentId } });
   if (!instrument) {
     throw new NotFoundError("Instrument", setup.instrumentId);
+  }
+
+  // Milestone 3: a TRADINGVIEW-sourced Setup can exist with only a candidate
+  // entry (see the model comment on Setup in schema.prisma) — reject
+  // clearly rather than crash on a null dereference. The explicit
+  // `!== null` checks (rather than a truthiness/length check on a
+  // collected-errors array) are what let TypeScript narrow both fields to
+  // non-null for the rest of this function.
+  if (setup.plannedStop === null || setup.plannedTarget1 === null) {
+    const missingFields: string[] = [];
+    if (setup.plannedStop === null) missingFields.push("plannedStop");
+    if (setup.plannedTarget1 === null) missingFields.push("plannedTarget1");
+    throw new SetupIncompletePlanError(setupId, missingFields);
   }
 
   const entryPrice = new Decimal(setup.plannedEntry.toString());

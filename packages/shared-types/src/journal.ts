@@ -69,6 +69,16 @@ export type CreateMarketSnapshotInput = z.infer<typeof createMarketSnapshotSchem
 
 // --- Setup ------------------------------------------------------------
 
+/**
+ * plannedStop/plannedTarget1 are optional (nullable at rest — see the
+ * Setup model comment in prisma/schema.prisma): a MANUAL_TEST/BACKTEST
+ * setup normally supplies a fully-planned trade up front, but a Milestone 3
+ * TRADINGVIEW setup often begins as just a candidate entry (the alert bar's
+ * close) with the stop/target genuinely not yet known — "unknown
+ * information must remain unknown" (docs/tradingview-setup.md) rather than
+ * fabricated. plannedEntry stays required: it is always a real observed
+ * price at the moment the setup is created, from any source.
+ */
 export const createSetupSchema = z.object({
   instrumentId: z.string().uuid(),
   strategyId: z.string().uuid(),
@@ -77,8 +87,8 @@ export const createSetupSchema = z.object({
   direction: z.enum(DIRECTIONS),
   source: z.enum(SETUP_SOURCES),
   plannedEntry: positiveDecimalString("plannedEntry"),
-  plannedStop: positiveDecimalString("plannedStop"),
-  plannedTarget1: positiveDecimalString("plannedTarget1"),
+  plannedStop: positiveDecimalString("plannedStop").optional(),
+  plannedTarget1: positiveDecimalString("plannedTarget1").optional(),
   plannedTarget2: positiveDecimalString("plannedTarget2").optional(),
   decisionSummary: z.string().trim().max(2000).optional(),
   metadata: z.record(z.string(), z.unknown()).default({}),

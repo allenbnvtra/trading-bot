@@ -90,13 +90,12 @@ export const TERMINAL_SETUP_STATUSES: readonly SetupStatus[] = [
 ];
 
 /**
- * Where a Setup came from. TradingView-originated setups arrive in a later
- * milestone; for now every setup is either produced by correlating an
- * existing deterministic BacktestTrade (BACKTEST), created by a human
- * exercising the journal manually (MANUAL_TEST), or created by an internal
- * process such as the seed/demo pipeline (SYSTEM).
+ * Where a Setup came from: a strategy evaluation correlated to an existing
+ * deterministic BacktestTrade (BACKTEST), a human exercising the journal
+ * manually (MANUAL_TEST), an internal process such as the seed/demo
+ * pipeline (SYSTEM), or a live TradingView alert (TRADINGVIEW — Milestone 3).
  */
-export const SETUP_SOURCES = ["BACKTEST", "MANUAL_TEST", "SYSTEM"] as const;
+export const SETUP_SOURCES = ["BACKTEST", "MANUAL_TEST", "SYSTEM", "TRADINGVIEW"] as const;
 export type SetupSource = (typeof SETUP_SOURCES)[number];
 
 /**
@@ -153,11 +152,17 @@ export type LossCategory = (typeof LOSS_CATEGORIES)[number];
 
 /**
  * Append-only journal event taxonomy (see docs/trade-journal-design.md).
- * This is the Milestone 2 subset only — AGENT_STARTED/COMPLETED/FAILED,
+ * This is the Milestone 2+3 subset only — AGENT_STARTED/COMPLETED/FAILED,
  * RESEARCH_HYPOTHESIS_CREATED, etc. are added in later milestones via a
  * migration when the runtime agents that emit them actually exist. Adding a
  * new value later is a small additive migration; do not pre-add speculative
  * values now.
+ *
+ * The WEBHOOK_ values (Milestone 3) audit the TradingView ingestion
+ * pipeline itself, correlated on the InboundWebhookEvent's own id — see
+ * docs/trade-journal-design.md "TradingView webhook ingestion". They are
+ * distinct from the SETUP- and TRADE-prefixed events above, which stay
+ * correlated on a Setup's id once one exists.
  */
 export const JOURNAL_EVENT_TYPES = [
   "SETUP_CREATED",
@@ -173,6 +178,12 @@ export const JOURNAL_EVENT_TYPES = [
   "TRADE_CLOSED",
   "POST_TRADE_ANALYSIS_CREATED",
   "STRATEGY_VERSION_PROPOSED",
+  "WEBHOOK_RECEIVED",
+  "WEBHOOK_NORMALIZED",
+  "SIGNAL_ACCEPTED",
+  "WEBHOOK_DUPLICATE_DETECTED",
+  "WEBHOOK_REJECTED",
+  "WEBHOOK_PROCESSING_FAILED",
 ] as const;
 export type JournalEventType = (typeof JOURNAL_EVENT_TYPES)[number];
 
@@ -186,9 +197,67 @@ export const JOURNAL_ENTITY_TYPES = [
   "BACKTEST_TRADE",
   "STRATEGY_VERSION",
   "POST_TRADE_ANALYSIS",
+  "INBOUND_WEBHOOK_EVENT",
 ] as const;
 export type JournalEntityType = (typeof JOURNAL_ENTITY_TYPES)[number];
 
 /** Screenshot capture point (see docs/screenshot-design.md). Schema foundation only in Milestone 2. */
 export const SCREENSHOT_TYPES = ["PRE_TRADE", "POST_TRADE"] as const;
 export type ScreenshotType = (typeof SCREENSHOT_TYPES)[number];
+
+/**
+ * Milestone 3: TradingView webhook ingestion. Provider is its own enum
+ * (rather than a hardcoded literal) so a future non-TradingView signal
+ * source can be added additively — see packages/shared-types/src/webhooks.ts
+ * and docs/tradingview-setup.md.
+ */
+export const WEBHOOK_PROVIDERS = ["TRADINGVIEW"] as const;
+export type WebhookProvider = (typeof WEBHOOK_PROVIDERS)[number];
+
+/**
+ * InboundWebhookEvent lifecycle. RECEIVED -> QUEUED happens synchronously in
+ * the HTTP handler (see docs/tradingview-setup.md); PROCESSING -> one of
+ * PROCESSED/DUPLICATE/REJECTED/FAILED/UNSUPPORTED happens in the BullMQ
+ * worker. DUPLICATE is set on the *original* event when a repeat delivery
+ * is detected — a repeat delivery never gets its own row (the fingerprint's
+ * database unique constraint prevents that), so DUPLICATE here means "this
+ * event has been redelivered at least once," not "this event is itself a
+ * duplicate row."
+ */
+export const WEBHOOK_PROCESSING_STATUSES = [
+  "RECEIVED",
+  "QUEUED",
+  "PROCESSING",
+  "PROCESSED",
+  "DUPLICATE",
+  "REJECTED",
+  "FAILED",
+  "UNSUPPORTED",
+] as const;
+export type WebhookProcessingStatus = (typeof WEBHOOK_PROCESSING_STATUSES)[number];
+
+/**
+ * Structured failure codes for a REJECTED/UNSUPPORTED InboundWebhookEvent.
+ * Stored as a plain string column (not a DB enum) so a genuinely
+ * unanticipated failure can still record a useful free-form message without
+ * a migration — these are the known, expected codes the normalizer/resolver
+ * pipeline itself produces.
+ */
+export const WEBHOOK_FAILURE_CODES = [
+  "UNSUPPORTED_SCHEMA_VERSION",
+  "MALFORMED_PAYLOAD",
+  "UNSUPPORTED_SIGNAL_TYPE",
+  "UNSUPPORTED_TIMEFRAME",
+  "UNKNOWN_INSTRUMENT",
+  "UNKNOWN_STRATEGY_VERSION",
+  "INTERNAL_ERROR",
+] as const;
+export type WebhookFailureCode = (typeof WEBHOOK_FAILURE_CODES)[number];
+
+/**
+ * Signal types a TradingView payload's `signal` field may carry. Only
+ * SETUP_CANDIDATE is supported in Milestone 3; anything else is rejected
+ * with UNSUPPORTED_SIGNAL_TYPE rather than guessed at.
+ */
+export const TRADINGVIEW_SIGNAL_TYPES = ["SETUP_CANDIDATE"] as const;
+export type TradingViewSignalType = (typeof TRADINGVIEW_SIGNAL_TYPES)[number];

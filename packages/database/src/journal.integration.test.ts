@@ -11,7 +11,7 @@ import {
 import { prisma } from "./client";
 import { toDb8 } from "./test-support/decimal";
 import { getNormalizedTrades } from "./analytics-adapter";
-import { NotFoundError, SetupTransitionError } from "./errors";
+import { NotFoundError, SetupIncompletePlanError, SetupTransitionError } from "./errors";
 import * as backtestsRepository from "./repositories/backtests";
 import * as instrumentsRepository from "./repositories/instruments";
 import * as journalEventsRepository from "./repositories/journal-events";
@@ -308,6 +308,52 @@ describe.skipIf(!process.env.DATABASE_URL)("journal pipeline (live Postgres)", (
     expect(normalizedBacktestTrade?.strategyId).toBe(strategy.id);
     expect(normalizedBacktestTrade?.executionMode).toBe("BACKTEST");
     expect(normalizedBacktestTrade?.slippage).toBeNull();
+  });
+
+  it("creates a TRADINGVIEW-sourced setup with no plannedStop/plannedTarget1, and rejects a risk calculation until they're known", async () => {
+    const instrument = await instrumentsRepository.findInstrumentBySymbolAndExchange("GENFUT1", "SIM-FUT");
+    expect(instrument).not.toBeNull();
+    if (!instrument) return;
+
+    const strategy = await prisma.strategy.findUnique({ where: { key: "ema-trend-pullback" } });
+    expect(strategy).not.toBeNull();
+    if (!strategy) return;
+
+    const strategyVersion = await prisma.strategyVersion.findUnique({
+      where: { strategyId_version: { strategyId: strategy.id, version: "1.0.0" } },
+    });
+    expect(strategyVersion).not.toBeNull();
+    if (!strategyVersion) return;
+
+    const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+      instrumentId: instrument.id,
+      timestamp: new Date("2024-03-02T08:00:00.000Z"),
+      timeframe: "5m",
+      metadata: { integrationTest: true },
+    });
+
+    const setup = await setupsRepository.createSetup({
+      instrumentId: instrument.id,
+      strategyId: strategy.id,
+      strategyVersionId: strategyVersion.id,
+      marketSnapshotId: snapshot.id,
+      direction: "LONG",
+      source: "TRADINGVIEW",
+      plannedEntry: new Decimal("5205.5"),
+      // plannedStop/plannedTarget1 deliberately omitted — not yet known.
+      metadata: { integrationTest: true },
+    });
+
+    expect(setup.plannedStop).toBeNull();
+    expect(setup.plannedTarget1).toBeNull();
+
+    await expect(
+      riskCalculationsRepository.createRiskCalculation(setup.id, {
+        accountEquity: new Decimal("50000"),
+        riskPercentage: new Decimal("1"),
+        slippageTicks: 1,
+      }),
+    ).rejects.toThrow(SetupIncompletePlanError);
   });
 
   it("rejects a PostTradeAnalysis referencing a nonexistent trade instead of inserting with null correlation metadata", async () => {
