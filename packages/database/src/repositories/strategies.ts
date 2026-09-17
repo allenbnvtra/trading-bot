@@ -3,6 +3,7 @@ import type { StrategyVersionStatus } from "@trading-copilot/shared-types";
 import type { Strategy, StrategyVersion } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
 import { mapStrategy, mapStrategyVersion } from "../mappers";
+import { createJournalEvent } from "./journal-events";
 
 export async function createStrategy(input: {
   key: string;
@@ -47,6 +48,12 @@ export async function getStrategyVersion(id: string): Promise<StrategyVersion | 
  * change a strategy's behavior is to create a new version row via this
  * function.
  */
+/**
+ * Emits STRATEGY_VERSION_PROPOSED alongside the create, in the same
+ * transaction — a new version being introduced into the system is itself a
+ * journaled event, regardless of what its initial `status` is. See
+ * docs/trade-journal-design.md's "Journal events" table.
+ */
 export async function createStrategyVersion(input: {
   strategyId: string;
   version: string;
@@ -55,15 +62,30 @@ export async function createStrategyVersion(input: {
   parameters: Record<string, unknown>;
   status: StrategyVersionStatus;
 }): Promise<StrategyVersion> {
-  const row = await prisma.strategyVersion.create({
-    data: {
-      strategyId: input.strategyId,
-      version: input.version,
-      name: input.name,
-      description: input.description,
-      parameters: input.parameters as Prisma.InputJsonValue,
-      status: input.status,
-    },
+  return prisma.$transaction(async (tx) => {
+    const row = await tx.strategyVersion.create({
+      data: {
+        strategyId: input.strategyId,
+        version: input.version,
+        name: input.name,
+        description: input.description,
+        parameters: input.parameters as Prisma.InputJsonValue,
+        status: input.status,
+      },
+    });
+
+    await createJournalEvent(
+      {
+        eventType: "STRATEGY_VERSION_PROPOSED",
+        entityType: "STRATEGY_VERSION",
+        entityId: row.id,
+        correlationId: row.id,
+        strategyId: row.strategyId,
+        strategyVersionId: row.id,
+      },
+      tx,
+    );
+
+    return mapStrategyVersion(row);
   });
-  return mapStrategyVersion(row);
 }

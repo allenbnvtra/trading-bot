@@ -55,6 +55,7 @@ async function getNormalizedBacktestTrades(
       entryTimestamp: entryTimestampRange(filters),
     },
     include: { strategyVersion: { select: { strategyId: true } } },
+    orderBy: { entryTimestamp: "asc" },
   });
 
   return rows.map((row): NormalizedTrade => ({
@@ -102,6 +103,7 @@ async function getNormalizedJournalTrades(
       executionMode: filters.executionMode,
       entryTimestamp: entryTimestampRange(filters),
     },
+    orderBy: { entryTimestamp: "asc" },
   });
 
   return rows.map((row): NormalizedTrade => {
@@ -151,6 +153,25 @@ async function getNormalizedJournalTrades(
   });
 }
 
+/**
+ * Both source lists are individually ordered by entryTimestamp ascending,
+ * but concatenating two independently-sorted lists does not itself produce
+ * a globally sorted list — packages/analytics' metrics/grouping functions
+ * treat their input as already chronological (for drawdown and win/loss
+ * streaks) and never re-sort, so callers must hand back one real
+ * time-ordered merge, not "backtest trades, then journal trades." Exported
+ * (pure, no I/O) so this is unit-testable without a database — see
+ * analytics-adapter.test.ts.
+ */
+export function mergeNormalizedTradesChronologically(
+  backtestTrades: NormalizedTrade[],
+  journalTrades: NormalizedTrade[],
+): NormalizedTrade[] {
+  return [...backtestTrades, ...journalTrades].sort(
+    (a, b) => a.entryTimestamp.getTime() - b.entryTimestamp.getTime(),
+  );
+}
+
 export async function getNormalizedTrades(
   filters: NormalizedTradeFilters = {},
 ): Promise<NormalizedTrade[]> {
@@ -158,5 +179,5 @@ export async function getNormalizedTrades(
     getNormalizedBacktestTrades(filters),
     getNormalizedJournalTrades(filters),
   ]);
-  return [...backtestTrades, ...journalTrades];
+  return mergeNormalizedTradesChronologically(backtestTrades, journalTrades);
 }

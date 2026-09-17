@@ -8,7 +8,7 @@ Milestone 1 shipped the deterministic backtester (`Instrument`, `Candle`, `Strat
 
 Pre-trade information is never contaminated by post-trade information:
 
-**Pre-trade** (immutable once recorded): `MarketSnapshot`, the `Setup` it backs, each `RiskCalculation`. None of these have an update path in `packages/database` — a `Setup` that needs fresher context gets a *new* `MarketSnapshot`/`RiskCalculation` row, never a mutation of an old one. A `Setup`'s only mutable surface is its state-machine fields (`status`, `decisionSummary`, `updatedAt`, `expiresAt`).
+**Pre-trade** (immutable once recorded): `MarketSnapshot`, the `Setup` it backs, each `RiskCalculation`. None of these have an update path in `packages/database` — a `Setup` that needs fresher context gets a *new* `MarketSnapshot`/`RiskCalculation` row, never a mutation of an old one. A `Setup`'s only mutable surface is its state-machine fields — `status`, `decisionSummary`, and (implicitly, via Prisma's `@updatedAt`) `updatedAt`. `expiresAt` is set once at creation and is **not** actually mutable after that: `transitionSetupStatus`'s update (see `packages/database/src/repositories/setups.ts`) only ever writes `status`/`decisionSummary`, and `TransitionSetupStatusInput`/`updateSetupStatusSchema` accept no `expiresAt` field at all — corrected here after the Milestone 2 audit found the previous wording overstated `expiresAt`'s mutability. `plannedEntry`/`plannedStop`/`plannedTarget1`/`plannedTarget2`/`marketSnapshotId` are likewise set once at creation and never touched by any exposed function.
 
 **Post-trade** (recorded later, separately): `JournalTrade`'s actual-entry/actual-exit/P&L/MFE/MAE fields (set once, at `recordJournalTradeEntry`/`closeJournalTrade` time), and `PostTradeAnalysis`.
 
@@ -33,6 +33,8 @@ A `Setup` can originate from `BACKTEST` (correlated to an existing deterministic
 ## Journal events (append-only)
 
 An append-only event log, not a replacement for the relational tables above — `packages/database`'s `journal-events.ts` repository exposes only `createJournalEvent`/`listJournalEvents`/`getSetupTimeline`, never an update or delete. The Milestone 2 event vocabulary (`JournalEventType`): `SETUP_CREATED`, `STRATEGY_EVALUATED`, `RISK_CALCULATED`, `SETUP_APPROVED`/`SETUP_REJECTED`/`SETUP_INVALIDATED`/`SETUP_EXPIRED`, `TRADE_READY`, `TRADE_EXECUTED`, `TRADE_SKIPPED`, `TRADE_CLOSED`, `POST_TRADE_ANALYSIS_CREATED`, `STRATEGY_VERSION_PROPOSED`. Later milestones add `AGENT_STARTED`/`AGENT_COMPLETED`/`AGENT_FAILED`, `RESEARCH_HYPOTHESIS_CREATED`, `STRATEGY_VERSION_APPROVED`, `STRATEGY_PAUSED`, etc. via a small additive migration once the runtime agents that emit them exist — they are deliberately not pre-added now.
+
+`createStrategyVersion` (Milestone 1, still immutable-versions-only, no update path) emits `STRATEGY_VERSION_PROPOSED` alongside the create, in the same transaction — a `StrategyVersion` row is never created without a corresponding journal entry.
 
 **Timeline reconstruction**: every event in a `Setup`'s lifecycle — including the events emitted by a `JournalTrade` created from it — shares `correlationId = setup.id`. `getSetupTimeline(setupId)` is therefore a single indexed query (`WHERE correlationId = ? ORDER BY timestamp ASC`), not a multi-table join across `Setup`/`RiskCalculation`/`JournalTrade`. Exact emission mapping:
 

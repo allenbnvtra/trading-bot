@@ -8,6 +8,7 @@ import {
   formatR,
   signOf,
 } from "@/lib/format";
+import AnalyticsDisclaimer from "@/components/AnalyticsDisclaimer";
 
 export default async function AnalyticsPage() {
   let groups: Awaited<ReturnType<typeof getAnalyticsStrategies>> = [];
@@ -25,6 +26,8 @@ export default async function AnalyticsPage() {
         <h1>Analytics</h1>
         <p>Deterministic performance analytics, one row per strategy version - never merged across versions.</p>
       </div>
+
+      <AnalyticsDisclaimer />
 
       {loadError && <div className="error-banner">{loadError}</div>}
 

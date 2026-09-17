@@ -3,6 +3,7 @@ import { Decimal } from "decimal.js";
 import type { LossCategory, PostTradeOutcome, TradeSource } from "@trading-copilot/shared-types";
 import type { PostTradeAnalysis } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
+import { NotFoundError } from "../errors";
 import { mapPostTradeAnalysis } from "../mappers";
 import { createJournalEvent } from "./journal-events";
 
@@ -27,19 +28,12 @@ export async function createPostTradeAnalysis(
   input: CreatePostTradeAnalysisInput,
 ): Promise<PostTradeAnalysis> {
   return prisma.$transaction(async (tx) => {
-    const row = await tx.postTradeAnalysis.create({
-      data: {
-        tradeId: input.tradeId,
-        tradeSource: input.tradeSource,
-        outcome: input.outcome,
-        primaryCause: input.primaryCause ?? null,
-        contributingFactors: input.contributingFactors ?? [],
-        confidence: input.confidence?.toString() ?? null,
-        evidence: (input.evidence ?? {}) as Prisma.InputJsonValue,
-        researchHypotheses: input.researchHypotheses ?? [],
-      },
-    });
-
+    // Resolve the referenced trade *before* writing anything. There is no
+    // DB-level foreign key for this polymorphic reference (it can point at
+    // either BacktestTrade or JournalTrade), so this lookup is the only
+    // integrity check available — reject a dangling tradeId/tradeSource
+    // rather than silently inserting a row with null correlation metadata.
+    //
     // A JournalTrade's events all correlate on its Setup's id (see
     // journal-trades.ts / journal-events.ts), so a post-trade analysis of a
     // JournalTrade joins that same timeline. A BacktestTrade has no Setup
@@ -52,23 +46,38 @@ export async function createPostTradeAnalysis(
 
     if (input.tradeSource === "JOURNAL_TRADE") {
       const trade = await tx.journalTrade.findUnique({ where: { id: input.tradeId } });
-      if (trade) {
-        correlationId = trade.setupId ?? input.tradeId;
-        instrumentId = trade.instrumentId;
-        strategyId = trade.strategyId;
-        strategyVersionId = trade.strategyVersionId;
+      if (!trade) {
+        throw new NotFoundError("JournalTrade", input.tradeId);
       }
+      correlationId = trade.setupId ?? input.tradeId;
+      instrumentId = trade.instrumentId;
+      strategyId = trade.strategyId;
+      strategyVersionId = trade.strategyVersionId;
     } else {
       const trade = await tx.backtestTrade.findUnique({ where: { id: input.tradeId } });
-      if (trade) {
-        instrumentId = trade.instrumentId;
-        strategyVersionId = trade.strategyVersionId;
-        const strategyVersion = await tx.strategyVersion.findUnique({
-          where: { id: trade.strategyVersionId },
-        });
-        strategyId = strategyVersion?.strategyId ?? null;
+      if (!trade) {
+        throw new NotFoundError("BacktestTrade", input.tradeId);
       }
+      instrumentId = trade.instrumentId;
+      strategyVersionId = trade.strategyVersionId;
+      const strategyVersion = await tx.strategyVersion.findUnique({
+        where: { id: trade.strategyVersionId },
+      });
+      strategyId = strategyVersion?.strategyId ?? null;
     }
+
+    const row = await tx.postTradeAnalysis.create({
+      data: {
+        tradeId: input.tradeId,
+        tradeSource: input.tradeSource,
+        outcome: input.outcome,
+        primaryCause: input.primaryCause ?? null,
+        contributingFactors: input.contributingFactors ?? [],
+        confidence: input.confidence?.toString() ?? null,
+        evidence: (input.evidence ?? {}) as Prisma.InputJsonValue,
+        researchHypotheses: input.researchHypotheses ?? [],
+      },
+    });
 
     await createJournalEvent(
       {

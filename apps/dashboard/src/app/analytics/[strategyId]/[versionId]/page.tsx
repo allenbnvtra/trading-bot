@@ -17,6 +17,7 @@ import {
 } from "@/lib/format";
 import { DirectionBadge, ExecutionModeBadge, TradeSourceBadge } from "@/components/StatusBadge";
 import AnalyticsStatGrid from "@/components/AnalyticsStatGrid";
+import AnalyticsDisclaimer from "@/components/AnalyticsDisclaimer";
 
 export default async function AnalyticsStrategyVersionPage({
   params,
@@ -56,6 +57,8 @@ export default async function AnalyticsStrategyVersionPage({
           {strategyId} / {versionId}
         </p>
       </div>
+
+      <AnalyticsDisclaimer />
 
       <div className="card">
         <h2>Overall</h2>

@@ -11,14 +11,16 @@ import {
 import { prisma } from "./client";
 import { toDb8 } from "./test-support/decimal";
 import { getNormalizedTrades } from "./analytics-adapter";
-import { SetupTransitionError } from "./errors";
+import { NotFoundError, SetupTransitionError } from "./errors";
 import * as backtestsRepository from "./repositories/backtests";
 import * as instrumentsRepository from "./repositories/instruments";
 import * as journalEventsRepository from "./repositories/journal-events";
 import * as journalTradesRepository from "./repositories/journal-trades";
 import * as marketSnapshotsRepository from "./repositories/market-snapshots";
+import * as postTradeAnalysesRepository from "./repositories/post-trade-analyses";
 import * as riskCalculationsRepository from "./repositories/risk-calculations";
 import * as setupsRepository from "./repositories/setups";
+import * as strategiesRepository from "./repositories/strategies";
 
 /**
  * End-to-end pipeline test against a real Postgres database, exercising
@@ -306,5 +308,46 @@ describe.skipIf(!process.env.DATABASE_URL)("journal pipeline (live Postgres)", (
     expect(normalizedBacktestTrade?.strategyId).toBe(strategy.id);
     expect(normalizedBacktestTrade?.executionMode).toBe("BACKTEST");
     expect(normalizedBacktestTrade?.slippage).toBeNull();
+  });
+
+  it("rejects a PostTradeAnalysis referencing a nonexistent trade instead of inserting with null correlation metadata", async () => {
+    await expect(
+      postTradeAnalysesRepository.createPostTradeAnalysis({
+        tradeId: "00000000-0000-0000-0000-000000000000",
+        tradeSource: "JOURNAL_TRADE",
+        outcome: "LOSS",
+      }),
+    ).rejects.toThrow(NotFoundError);
+
+    await expect(
+      postTradeAnalysesRepository.createPostTradeAnalysis({
+        tradeId: "00000000-0000-0000-0000-000000000000",
+        tradeSource: "BACKTEST_TRADE",
+        outcome: "LOSS",
+      }),
+    ).rejects.toThrow(NotFoundError);
+  });
+
+  it("emits STRATEGY_VERSION_PROPOSED when a new StrategyVersion is created", async () => {
+    const strategy = await prisma.strategy.findUnique({ where: { key: "ema-trend-pullback" } });
+    expect(strategy).not.toBeNull();
+    if (!strategy) return;
+
+    const versionLabel = `integration-test-${Date.now()}`;
+    const version = await strategiesRepository.createStrategyVersion({
+      strategyId: strategy.id,
+      version: versionLabel,
+      name: "Integration test version",
+      description: "Created only to verify STRATEGY_VERSION_PROPOSED emission.",
+      parameters: { integrationTest: true },
+      status: "DISCOVERED",
+    });
+
+    const events = await journalEventsRepository.listJournalEvents({ correlationId: version.id });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.eventType).toBe("STRATEGY_VERSION_PROPOSED");
+    expect(events[0]?.entityType).toBe("STRATEGY_VERSION");
+    expect(events[0]?.entityId).toBe(version.id);
+    expect(events[0]?.strategyId).toBe(strategy.id);
   });
 });
