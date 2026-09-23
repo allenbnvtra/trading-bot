@@ -156,3 +156,46 @@ export function calculateRMultiple(netPnl: Decimal, riskAmount: Decimal): Decima
 
   return netPnl.dividedBy(riskAmount);
 }
+
+export interface ExcursionCandle {
+  high: Decimal;
+  low: Decimal;
+}
+
+/**
+ * Maximum favorable/adverse excursion across a candle range, in points.
+ * Mirrors packages/backtester's engine.ts walkTradeForward loop exactly
+ * (same per-candle favorable/adverse formula) so a manually-closed
+ * JournalTrade's MFE/MAE is computed identically to a BacktestTrade's,
+ * rather than by a second, potentially-diverging implementation. Never
+ * negative — a candle range that never moves favorably (or adversely)
+ * yields 0 for that side, not a negative number. Callers pass the candle
+ * range from entry through (and including) exit, matching how the
+ * backtester walks candles.
+ */
+export function calculateExcursions(
+  candles: ExcursionCandle[],
+  entryPrice: Decimal,
+  direction: Direction,
+): { mfe: Decimal; mae: Decimal } {
+  assertFiniteDecimal(entryPrice, "entryPrice");
+  if (candles.length === 0) {
+    throw new RiskEngineError("candles must not be empty");
+  }
+
+  let mfe = new Decimal(0);
+  let mae = new Decimal(0);
+
+  for (const candle of candles) {
+    assertFiniteDecimal(candle.high, "candle.high");
+    assertFiniteDecimal(candle.low, "candle.low");
+
+    const favorable = direction === "LONG" ? candle.high.minus(entryPrice) : entryPrice.minus(candle.low);
+    const adverse = direction === "LONG" ? entryPrice.minus(candle.low) : candle.high.minus(entryPrice);
+
+    if (favorable.greaterThan(mfe)) mfe = favorable;
+    if (adverse.greaterThan(mae)) mae = adverse;
+  }
+
+  return { mfe, mae };
+}

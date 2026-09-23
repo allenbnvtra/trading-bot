@@ -2,6 +2,7 @@ import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
   RiskEngineError,
+  calculateExcursions,
   calculateGrossPnl,
   calculateNetPnl,
   calculatePositionSize,
@@ -246,5 +247,45 @@ describe("calculateRMultiple", () => {
   it("throws on a zero or negative riskAmount", () => {
     expect(() => calculateRMultiple(D(500), D(0))).toThrow(RiskEngineError);
     expect(() => calculateRMultiple(D(500), D(-1))).toThrow(RiskEngineError);
+  });
+});
+
+describe("calculateExcursions", () => {
+  it("finds the best/worst unrealized move for a LONG across several candles", () => {
+    const entry = new Decimal(100);
+    const candles = [
+      { high: new Decimal(102), low: new Decimal(99) }, // favorable 2, adverse 1
+      { high: new Decimal(105), low: new Decimal(97) }, // favorable 5, adverse 3
+      { high: new Decimal(103), low: new Decimal(98) }, // favorable 3, adverse 2
+    ];
+    const { mfe, mae } = calculateExcursions(candles, entry, "LONG");
+    expect(mfe.toString()).toBe("5");
+    expect(mae.toString()).toBe("3");
+  });
+
+  it("finds the best/worst unrealized move for a SHORT", () => {
+    const entry = new Decimal(100);
+    const candles = [{ high: new Decimal(103), low: new Decimal(96) }];
+    const { mfe, mae } = calculateExcursions(candles, entry, "SHORT");
+    expect(mfe.toString()).toBe("4"); // entry(100) - low(96)
+    expect(mae.toString()).toBe("3"); // high(103) - entry(100)
+  });
+
+  it("never returns a negative excursion even if price never moves favorably/adversely", () => {
+    const entry = new Decimal(100);
+    const candles = [{ high: new Decimal(100), low: new Decimal(100) }];
+    const { mfe, mae } = calculateExcursions(candles, entry, "LONG");
+    expect(mfe.toString()).toBe("0");
+    expect(mae.toString()).toBe("0");
+  });
+
+  it("throws RiskEngineError on an empty candle array", () => {
+    expect(() => calculateExcursions([], new Decimal(100), "LONG")).toThrow(RiskEngineError);
+  });
+
+  it("throws RiskEngineError on NaN/Infinity entryPrice", () => {
+    const candles = [{ high: new Decimal(103), low: new Decimal(96) }];
+    expect(() => calculateExcursions(candles, new Decimal(NaN), "LONG")).toThrow(RiskEngineError);
+    expect(() => calculateExcursions(candles, new Decimal(Infinity), "LONG")).toThrow(RiskEngineError);
   });
 });
