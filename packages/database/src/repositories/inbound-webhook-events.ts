@@ -400,6 +400,30 @@ export async function findMostRecentProcessedInboundWebhookEvent(): Promise<Inbo
   return row ? mapInboundWebhookEvent(row) : null;
 }
 
+/**
+ * InboundWebhookEvents stuck at RECEIVED/QUEUED older than `olderThan` — the
+ * narrow crash window documented in docs/tradingview-setup.md "Known
+ * limitations" (now closed): the row was persisted (claiming its
+ * fingerprint) but the BullMQ job that should process it was never
+ * successfully enqueued, or a worker crashed before ever picking it up.
+ * Consumed only by WebhookReconciliationProcessor, which re-enqueues the
+ * processing job — safe to call unconditionally because
+ * TradingViewWebhookProcessor is already idempotent per event id
+ * (ALREADY_RESOLVED_STATUSES / Setup.sourceWebhookEventId's uniqueness), so
+ * a harmless duplicate job for an event that was actually fine is never a
+ * correctness problem, only a wasted no-op processing attempt.
+ */
+export async function findStaleInboundWebhookEvents(olderThan: Date): Promise<InboundWebhookEvent[]> {
+  const rows = await prisma.inboundWebhookEvent.findMany({
+    where: {
+      processingStatus: { in: ["RECEIVED", "QUEUED"] },
+      receivedAt: { lt: olderThan },
+    },
+    orderBy: { receivedAt: "asc" },
+  });
+  return rows.map(mapInboundWebhookEvent);
+}
+
 /** Mirrors getSetupTimelineRaw in journal-events.ts: this webhook event's own ingestion trail. */
 export async function getInboundWebhookEventTimelineRaw(id: string): Promise<PrismaJournalEventRow[]> {
   return listJournalEventRows({ correlationId: id });

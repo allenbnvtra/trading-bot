@@ -6,6 +6,7 @@ import {
   createInboundWebhookEvent,
   findMostRecentInboundWebhookEvent,
   findMostRecentProcessedInboundWebhookEvent,
+  findStaleInboundWebhookEvents,
   markInboundWebhookEventProcessed,
 } from "./inbound-webhook-events";
 import * as instrumentsRepository from "./instruments";
@@ -158,3 +159,90 @@ describe.skipIf(!process.env.DATABASE_URL)(
     });
   },
 );
+
+/**
+ * findStaleInboundWebhookEvents backs the webhook-reconciliation sweep (see
+ * apps/worker/src/webhook-reconciliation/webhook-reconciliation.processor.ts
+ * and docs/tradingview-setup.md "Known limitations", now closed). Like the
+ * findMostRecent* suite above, this is a thin `findMany`/`where`/`orderBy`
+ * wrapper with no pure logic to isolate from Prisma, so it's asserted
+ * against a real Postgres database with backdated fixture rows rather than
+ * a mocked Prisma client.
+ */
+describe.skipIf(!process.env.DATABASE_URL)("findStaleInboundWebhookEvents (live Postgres)", () => {
+  beforeAll(async () => {
+    await prisma.inboundWebhookEvent.deleteMany({ where: { fingerprint: { startsWith: "stale-" } } });
+  });
+
+  afterAll(async () => {
+    await prisma.inboundWebhookEvent.deleteMany({ where: { fingerprint: { startsWith: "stale-" } } });
+  });
+
+  it("returns only RECEIVED/QUEUED events older than the cutoff, oldest first, excluding everything else", async () => {
+    const cutoff = new Date("2026-06-01T00:00:00.000Z");
+
+    // Older than cutoff, still RECEIVED -> included.
+    const staleReceived = await createInboundWebhookEvent({
+      provider: "TRADINGVIEW",
+      schemaVersion: 1,
+      rawPayload: { fixture: "stale-received" },
+      fingerprint: `stale-received-${randomUUID()}`,
+    });
+    await prisma.inboundWebhookEvent.update({
+      where: { id: staleReceived.event.id },
+      data: { receivedAt: new Date("2026-01-01T00:00:00.000Z") },
+    });
+
+    // Older than cutoff and QUEUED -> included, and ordered after
+    // staleReceived (later receivedAt).
+    const staleQueued = await createInboundWebhookEvent({
+      provider: "TRADINGVIEW",
+      schemaVersion: 1,
+      rawPayload: { fixture: "stale-queued" },
+      fingerprint: `stale-queued-${randomUUID()}`,
+    });
+    await prisma.inboundWebhookEvent.update({
+      where: { id: staleQueued.event.id },
+      data: { receivedAt: new Date("2026-02-01T00:00:00.000Z"), processingStatus: "QUEUED" },
+    });
+
+    // Older than cutoff but already PROCESSED -> excluded, even though it's
+    // the oldest row of all (this is the exact "already fine" case the
+    // reconciliation sweep must never touch).
+    const stalePastProcessed = await createInboundWebhookEvent({
+      provider: "TRADINGVIEW",
+      schemaVersion: 1,
+      rawPayload: { fixture: "stale-processed" },
+      fingerprint: `stale-processed-${randomUUID()}`,
+    });
+    await prisma.inboundWebhookEvent.update({
+      where: { id: stalePastProcessed.event.id },
+      data: {
+        receivedAt: new Date("2025-12-01T00:00:00.000Z"),
+        processingStatus: "PROCESSED",
+        processingCompletedAt: new Date("2025-12-01T00:00:01.000Z"),
+      },
+    });
+
+    // Newer than cutoff and RECEIVED -> excluded (not stale yet).
+    const freshReceived = await createInboundWebhookEvent({
+      provider: "TRADINGVIEW",
+      schemaVersion: 1,
+      rawPayload: { fixture: "stale-fresh" },
+      fingerprint: `stale-fresh-${randomUUID()}`,
+    });
+    await prisma.inboundWebhookEvent.update({
+      where: { id: freshReceived.event.id },
+      data: { receivedAt: new Date("2026-07-01T00:00:00.000Z") },
+    });
+
+    const stale = await findStaleInboundWebhookEvents(cutoff);
+    const staleIds = stale.map((event) => event.id);
+
+    expect(staleIds).toContain(staleReceived.event.id);
+    expect(staleIds).toContain(staleQueued.event.id);
+    expect(staleIds).not.toContain(stalePastProcessed.event.id);
+    expect(staleIds).not.toContain(freshReceived.event.id);
+    expect(staleIds.indexOf(staleReceived.event.id)).toBeLessThan(staleIds.indexOf(staleQueued.event.id));
+  });
+});
