@@ -1,6 +1,7 @@
 import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
 import {
+  SCREENSHOT_QUEUE,
   SETUP_EXPIRATION_QUEUE,
   TRADINGVIEW_WEBHOOK_JOB_OPTIONS,
   TRADINGVIEW_WEBHOOK_QUEUE,
@@ -9,6 +10,9 @@ import {
 import { BACKTEST_RUN_QUEUE } from "./backtest-run/backtest-run.constants";
 import { BacktestRunProcessor } from "./backtest-run/backtest-run.processor";
 import { createRedisConnectionOptions } from "./common/redis-connection";
+import { BrowserManager } from "./screenshot-generation/browser-manager";
+import { ScreenshotGenerationProcessor } from "./screenshot-generation/screenshot-generation.processor";
+import { screenshotStorageProvider } from "./screenshot-generation/screenshot-storage.provider";
 import { SetupExpirationProcessor } from "./setup-expiration/setup-expiration.processor";
 import { TradingViewWebhookProcessor } from "./tradingview-webhook/tradingview-webhook.processor";
 import { WebhookReconciliationProcessor } from "./webhook-reconciliation/webhook-reconciliation.processor";
@@ -50,12 +54,26 @@ import { WebhookReconciliationProcessor } from "./webhook-reconciliation/webhook
       },
     }),
     BullModule.registerQueue({ name: WEBHOOK_RECONCILIATION_QUEUE }),
+    // attempts: 1 - deliberately not retried automatically
+    // (docs/screenshot-design.md "do not retry indefinitely"). Every
+    // failure path in ScreenshotGenerationProcessor already marks the
+    // TradeScreenshot row FAILED before rethrowing, so a failed job here
+    // never leaves a row silently stuck at GENERATING; a human (or a
+    // future manual "retry" action) re-triggers generation instead of an
+    // automatic BullMQ retry storm re-launching Chromium repeatedly.
+    BullModule.registerQueue({
+      name: SCREENSHOT_QUEUE,
+      defaultJobOptions: { attempts: 1 },
+    }),
   ],
   providers: [
     BacktestRunProcessor,
     TradingViewWebhookProcessor,
     SetupExpirationProcessor,
     WebhookReconciliationProcessor,
+    BrowserManager,
+    screenshotStorageProvider,
+    ScreenshotGenerationProcessor,
   ],
 })
 export class AppModule {}

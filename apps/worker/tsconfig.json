@@ -6,6 +6,7 @@
     "outDir": "dist",
     "rootDir": "src",
     "types": ["node"],
+    "lib": ["ES2022", "DOM"],
     "experimentalDecorators": true,
     "emitDecoratorMetadata": true,
     "useDefineForClassFields": false
