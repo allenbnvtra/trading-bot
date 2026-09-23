@@ -912,6 +912,105 @@ export function requestPostTradeScreenshot(tradeId: string): Promise<TradeScreen
   });
 }
 
+// --- Milestone 7: AI research agent + experiment framework --------------
+//
+// Mirrors packages/trading-domain/src/research-entities.ts by hand, same
+// convention as every other type in this file - the dashboard never adds a
+// workspace dependency on @trading-copilot/trading-domain, it stays decoupled
+// and mirrors whatever shape the API actually sends. Date/Decimal fields come
+// back from the API as strings, never recomputed here. See
+// docs/ai-research.md for the full pipeline (hypothesis -> experiment ->
+// validation -> final test -> walk-forward foundation) these move through -
+// the AI never calculates a P&L/risk number and never modifies an approved
+// StrategyVersion; a human always decides what happens with a result.
+//
+// Only the hypothesis list/generate surface lives here (Task 11).
+// ResearchExperiment/ResearchDatasetRole/AgentExecutionSummary and the
+// composite getResearchHypothesis(id) (hypothesis + experiments +
+// agentExecution) belong to the detail page and are added there, to avoid
+// declaring the same export twice.
+
+export type HypothesisConfidence = "LOW" | "MEDIUM" | "HIGH";
+export type ResearchHypothesisStatus =
+  | "PROPOSED"
+  | "EXPERIMENT_QUEUED"
+  | "IN_PROGRESS"
+  | "VALIDATED"
+  | "REJECTED"
+  | "ABANDONED";
+export type AgentType = "RESEARCH";
+export type AIProviderType = "MOCK" | "ANTHROPIC";
+export type AgentExecutionStatus = "RUNNING" | "SUCCEEDED" | "FAILED";
+
+/**
+ * A deliberately partial mirror of the domain type (same convention as
+ * MarketSnapshot above) - only the fields the hypothesis list page actually
+ * renders. agentExecutionId/sourceDataSummary/proposedStrategyDefinition are
+ * not included here; the detail page can extend this interface the same way
+ * JournalTrade grew over milestones, if it needs them.
+ */
+export interface ResearchHypothesis {
+  id: string;
+  title: string;
+  statement: string;
+  rationale: string;
+  confidence: HypothesisConfidence;
+  status: ResearchHypothesisStatus;
+  createdAt: string;
+}
+
+export function listResearchHypotheses(): Promise<ResearchHypothesis[]> {
+  return apiFetch<ResearchHypothesis[]>("/research/hypotheses");
+}
+
+/**
+ * The full audit row for one AI call, always created (status RUNNING)
+ * before the call is made and updated with its outcome after - see
+ * docs/ai-research.md "Every AI call is durably audited". outputParsed is
+ * only non-null once status is SUCCEEDED; a call that fails to parse into
+ * the hypothesis schema is recorded as FAILED with the raw response
+ * preserved, never silently discarded.
+ */
+export interface AgentExecution {
+  id: string;
+  agentType: AgentType;
+  provider: AIProviderType;
+  model: string;
+  promptVersion: string;
+  inputSummary: Record<string, unknown>;
+  outputRaw: string | null;
+  outputParsed: Record<string, unknown> | null;
+  status: AgentExecutionStatus;
+  errorMessage: string | null;
+  tokensInput: number | null;
+  tokensOutput: number | null;
+  costUsd: string | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
+export interface GenerateResearchHypothesisInput {
+  strategyId?: string;
+  instrumentId?: string;
+}
+
+/**
+ * Triggers a new AI research agent run (POST /research/hypotheses/generate).
+ * The agent job runs asynchronously (BullMQ, attempts: 1 - see
+ * docs/ai-research.md), so this returns the AgentExecution audit row created
+ * for the call (status RUNNING), not a ResearchHypothesis - the resulting
+ * hypothesis, if the call succeeds and parses, becomes visible afterward via
+ * listResearchHypotheses/getResearchHypothesis.
+ */
+export function generateResearchHypothesis(
+  input: GenerateResearchHypothesisInput,
+): Promise<AgentExecution> {
+  return apiFetch<AgentExecution>("/research/hypotheses/generate", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export interface WebhookReceivedRealtimeEvent {
   type: "webhook.received";
   timestamp: string;
