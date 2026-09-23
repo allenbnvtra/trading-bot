@@ -1,6 +1,8 @@
 import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
 import { SCREENSHOT_QUEUE } from "@trading-copilot/shared-types";
+import { ScreenshotController } from "./screenshot.controller";
+import { screenshotStorageProvider } from "./screenshot-storage.provider";
 import { ScreenshotService } from "./screenshot.service";
 
 /**
@@ -19,7 +21,8 @@ import { ScreenshotService } from "./screenshot.service";
       defaultJobOptions: { attempts: 1 },
     }),
   ],
-  providers: [ScreenshotService],
+  controllers: [ScreenshotController],
+  providers: [ScreenshotService, screenshotStorageProvider],
   exports: [ScreenshotService],
 })
 export class ScreenshotModule {}
