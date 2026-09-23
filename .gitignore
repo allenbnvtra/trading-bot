@@ -34,3 +34,7 @@ coverage/
 
 # local screenshots (future milestone)
 storage/screenshots/
+
+# local git worktrees (isolated workspaces for subagent-driven plan execution)
+.worktrees/
+.superpowers/
