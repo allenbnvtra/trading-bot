@@ -65,14 +65,14 @@ export class AgentExecutionProcessor extends WorkerHost {
       throw new Error(`AgentExecution ${agentExecutionId} not found: it must be created before enqueueing`);
     }
 
-    await journalEventsRepository.createJournalEvent({
-      eventType: "AGENT_STARTED",
-      entityType: "AGENT_EXECUTION",
-      entityId: agentExecutionId,
-      metadata: { provider: execution.provider },
-    });
-
     try {
+      await journalEventsRepository.createJournalEvent({
+        eventType: "AGENT_STARTED",
+        entityType: "AGENT_EXECUTION",
+        entityId: agentExecutionId,
+        metadata: { provider: execution.provider },
+      });
+
       const agent = new ResearchAgent(this.aiProvider);
       // execution.inputSummary is Record<string, unknown> (a Json column
       // round-tripped through Prisma) with no compile-time proof it matches
