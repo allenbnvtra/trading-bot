@@ -1,6 +1,7 @@
 import { Decimal } from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
+  calculateExcursions,
   calculatePositionSize,
   calculateRiskBudget,
   calculateRiskPerContract,
@@ -199,8 +200,6 @@ describe.skipIf(!process.env.DATABASE_URL)("journal pipeline (live Postgres)", (
       exitTimestamp: new Date("2024-03-01T15:00:00.000Z"),
       actualFees,
       actualSlippage: riskCalculation.estimatedSlippage,
-      mfe: new Decimal("32"),
-      mae: new Decimal("4"),
     });
     expect(trade.status).toBe("CLOSED");
 
@@ -372,6 +371,177 @@ describe.skipIf(!process.env.DATABASE_URL)("journal pipeline (live Postgres)", (
         outcome: "LOSS",
       }),
     ).rejects.toThrow(NotFoundError);
+  });
+
+  /**
+   * Milestone 6, Task 4: closeJournalTrade no longer accepts mfe/mae as
+   * client input (docs/notifications.md) — it computes them server-side
+   * from real Candle rows between entry and exit via
+   * packages/risk-engine's calculateExcursions, the same function the
+   * backtester itself uses. This is a differential proof, not just "some
+   * non-null number": the candle set below is deliberately hand-built
+   * (SYNTHETIC TEST DATA — NOT REAL MARKET DATA, only used to prove this
+   * assertion) with one candle that moves favorably beyond entry and one
+   * that moves adversely beyond entry, and the assertion recomputes
+   * calculateExcursions independently over that exact same candle set to
+   * confirm closeJournalTrade's stored mfe/mae match it exactly.
+   */
+  it("closeJournalTrade computes mfe/mae server-side from real candles, matching calculateExcursions exactly", async () => {
+    const instrument = await instrumentsRepository.findInstrumentBySymbolAndExchange("GENFUT1", "SIM-FUT");
+    expect(instrument).not.toBeNull();
+    if (!instrument) return;
+
+    const strategy = await prisma.strategy.findUnique({ where: { key: "ema-trend-pullback" } });
+    expect(strategy).not.toBeNull();
+    if (!strategy) return;
+
+    const strategyVersion = await prisma.strategyVersion.findUnique({
+      where: { strategyId_version: { strategyId: strategy.id, version: "1.0.0" } },
+    });
+    expect(strategyVersion).not.toBeNull();
+    if (!strategyVersion) return;
+
+    const timeframe = "5m";
+    // Candle uniqueness is (instrumentId, timeframe, timestamp) — a fixed
+    // literal date here would collide with itself on every re-run against
+    // this shared, non-reset dev database (caught by running this suite
+    // twice in a row locally). Anchored to the moment this test actually
+    // runs instead, like screenshot-immutability.integration.test.ts's
+    // future-dated renderedAt fixtures.
+    const base = Date.now();
+    const entryTimestamp = new Date(base);
+    const midTimestamp = new Date(base + 5 * 60_000);
+    const exitTimestamp = new Date(base + 10 * 60_000);
+
+    // SYNTHETIC TEST DATA — NOT REAL MARKET DATA. Hand-built so the
+    // favorable/adverse extremes are unambiguous: the mid candle spikes
+    // favorably (high 110), the exit candle spikes adversely (low 90).
+    //
+    // This suite runs against a shared, non-transactional live database
+    // alongside other test runs (see findMostRecentReadyScreenshot's own
+    // `finally`-cleanup precedent in trade-screenshots.test.ts) — a
+    // previous run's leftover candles falling inside *this* run's
+    // entry->exit window would silently corrupt the "exactly these 3
+    // candles" assertion below (caught by running this suite repeatedly in
+    // quick succession locally), so this test deletes its own rows
+    // unconditionally in a `finally` block rather than leaving them behind.
+    await prisma.candle.createMany({
+      data: [
+        {
+          instrumentId: instrument.id,
+          timeframe,
+          timestamp: entryTimestamp,
+          open: "100",
+          high: "101",
+          low: "99",
+          close: "100.5",
+          volume: "10",
+        },
+        {
+          instrumentId: instrument.id,
+          timeframe,
+          timestamp: midTimestamp,
+          open: "100.5",
+          high: "110",
+          low: "99.5",
+          close: "105",
+          volume: "15",
+        },
+        {
+          instrumentId: instrument.id,
+          timeframe,
+          timestamp: exitTimestamp,
+          open: "105",
+          high: "106",
+          low: "90",
+          close: "95",
+          volume: "20",
+        },
+      ],
+    });
+
+    try {
+      const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+        instrumentId: instrument.id,
+        timestamp: entryTimestamp,
+        timeframe,
+        metadata: { integrationTest: true, purpose: "mfe-mae-differential" },
+      });
+
+      const plannedEntry = new Decimal("100");
+      const plannedStop = new Decimal("95");
+      const plannedTarget1 = new Decimal("110");
+
+      const setup = await setupsRepository.createSetup({
+        instrumentId: instrument.id,
+        strategyId: strategy.id,
+        strategyVersionId: strategyVersion.id,
+        marketSnapshotId: snapshot.id,
+        direction: "LONG",
+        source: "MANUAL_TEST",
+        plannedEntry,
+        plannedStop,
+        plannedTarget1,
+        metadata: { integrationTest: true },
+      });
+
+      let trade = await journalTradesRepository.createJournalTrade({
+        setupId: setup.id,
+        instrumentId: instrument.id,
+        strategyId: strategy.id,
+        strategyVersionId: strategyVersion.id,
+        direction: "LONG",
+        plannedEntry,
+        plannedStop,
+        plannedTarget1,
+        plannedRisk: new Decimal("5"),
+        executionMode: "PAPER",
+      });
+
+      const actualEntry = new Decimal("100");
+      trade = await journalTradesRepository.recordJournalTradeEntry(trade.id, {
+        actualEntry,
+        entryTimestamp,
+        quantity: 1,
+        estimatedFees: new Decimal("0"),
+        estimatedSlippage: new Decimal("0"),
+      });
+
+      trade = await journalTradesRepository.closeJournalTrade(trade.id, {
+        actualExit: new Decimal("98"),
+        exitTimestamp,
+        actualFees: new Decimal("0"),
+        actualSlippage: new Decimal("0"),
+      });
+      expect(trade.status).toBe("CLOSED");
+
+      // Independent recomputation over the exact same candle set, for the
+      // differential assertion.
+      const candles = await prisma.candle.findMany({
+        where: { instrumentId: instrument.id, timeframe, timestamp: { gte: entryTimestamp, lte: exitTimestamp } },
+        orderBy: { timestamp: "asc" },
+      });
+      expect(candles).toHaveLength(3);
+      const expected = calculateExcursions(
+        candles.map((c) => ({ high: new Decimal(c.high.toString()), low: new Decimal(c.low.toString()) })),
+        actualEntry,
+        "LONG",
+      );
+
+      expect(trade.mfe).not.toBeNull();
+      expect(trade.mae).not.toBeNull();
+      expect(toDb8(trade.mfe!)).toBe(toDb8(expected.mfe));
+      expect(toDb8(trade.mae!)).toBe(toDb8(expected.mae));
+      // Sanity-check the hand-picked extremes actually drove the result:
+      // mfe from the mid candle's high (110 - 100 = 10), mae from the exit
+      // candle's low (100 - 90 = 10).
+      expect(trade.mfe!.toString()).toBe("10");
+      expect(trade.mae!.toString()).toBe("10");
+    } finally {
+      await prisma.candle.deleteMany({
+        where: { instrumentId: instrument.id, timeframe, timestamp: { gte: entryTimestamp, lte: exitTimestamp } },
+      });
+    }
   });
 
   it("emits STRATEGY_VERSION_PROPOSED when a new StrategyVersion is created", async () => {

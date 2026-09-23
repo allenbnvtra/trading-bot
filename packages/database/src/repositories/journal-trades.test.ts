@@ -74,4 +74,42 @@ describe("computeJournalTradeClose", () => {
 
     expect(result.rMultiple).toBeNull();
   });
+
+  it("computes outcome WIN when netPnl is positive, LOSS when negative, BREAKEVEN when exactly zero", () => {
+    const win = computeJournalTradeClose(
+      "LONG",
+      new Decimal("100"),
+      new Decimal("110"),
+      1,
+      new Decimal("10"),
+      new Decimal("0"),
+      null,
+    );
+    expect(win.netPnl.toString()).toBe("100");
+    expect(win.outcome).toBe("WIN");
+
+    const loss = computeJournalTradeClose(
+      "LONG",
+      new Decimal("100"),
+      new Decimal("90"),
+      1,
+      new Decimal("10"),
+      new Decimal("0"),
+      null,
+    );
+    expect(loss.netPnl.toString()).toBe("-100");
+    expect(loss.outcome).toBe("LOSS");
+
+    const breakeven = computeJournalTradeClose(
+      "LONG",
+      new Decimal("100"),
+      new Decimal("100"),
+      1,
+      new Decimal("10"),
+      new Decimal("0"),
+      null,
+    );
+    expect(breakeven.netPnl.toString()).toBe("0");
+    expect(breakeven.outcome).toBe("BREAKEVEN");
+  });
 });

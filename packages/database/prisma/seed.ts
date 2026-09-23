@@ -376,8 +376,11 @@ async function seedDemoJournalLifecycle(
     exitTimestamp: new Date("2024-02-03T15:00:00.000Z"),
     actualFees: riskCalculation.estimatedCommission,
     actualSlippage: riskCalculation.estimatedSlippage,
-    mfe: new Decimal("30"),
-    mae: new Decimal("5"),
+    // mfe/mae are no longer client-supplied (Milestone 6) — closeJournalTrade
+    // now computes them server-side from real Candle rows between entry and
+    // exit via calculateExcursions. This demo Setup/candle window doesn't
+    // guarantee overlapping seeded candles, so they may come back null here;
+    // that's fine for a dashboard demo fixture.
     exitNotes: "Closed near target1 after a clean pullback continuation.",
   });
   console.log(

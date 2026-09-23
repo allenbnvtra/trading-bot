@@ -135,8 +135,6 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
       exitTimestamp: new Date(),
       actualFees: new Decimal("2.5"),
       actualSlippage: new Decimal("1"),
-      mfe: new Decimal("10"),
-      mae: new Decimal("1"),
     });
 
     const after = await getScreenshot(preTradeScreenshot.id);

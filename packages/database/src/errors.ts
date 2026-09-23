@@ -74,6 +74,20 @@ export class ScreenshotTargetError extends Error {
 }
 
 /**
+ * Thrown by markNotificationSending/Sent/Failed/Retrying when called from
+ * the wrong NotificationDelivery lifecycle state (mirrors ScreenshotStateError
+ * exactly). Same constructor signature: operation, actual status, expected
+ * status.
+ */
+export class NotificationStateError extends Error {
+  constructor(action: string, currentStatus: string, requiredStatus: string) {
+    super(`cannot ${action}: NotificationDelivery status is ${currentStatus}, required ${requiredStatus}`);
+    this.name = "NotificationStateError";
+    Object.setPrototypeOf(this, NotificationStateError.prototype);
+  }
+}
+
+/**
  * Thrown by createRiskCalculation when the Setup it targets has no
  * plannedStop and/or plannedTarget1 yet (Milestone 3: a TRADINGVIEW-sourced
  * setup can begin with only a candidate entry). A risk calculation is

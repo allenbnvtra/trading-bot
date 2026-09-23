@@ -16,5 +16,6 @@ export * as journalTradesRepository from "./repositories/journal-trades";
 export * as journalEventsRepository from "./repositories/journal-events";
 export * as postTradeAnalysesRepository from "./repositories/post-trade-analyses";
 export * as tradeScreenshotsRepository from "./repositories/trade-screenshots";
+export * as notificationDeliveriesRepository from "./repositories/notification-deliveries";
 export * as inboundWebhookEventsRepository from "./repositories/inbound-webhook-events";
 export * as tradingViewInstrumentMappingsRepository from "./repositories/tradingview-instrument-mappings";

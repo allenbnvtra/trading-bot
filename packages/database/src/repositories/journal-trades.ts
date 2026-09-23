@@ -1,10 +1,11 @@
 import { Decimal } from "decimal.js";
-import { calculateGrossPnl, calculateNetPnl, calculateRMultiple } from "@trading-copilot/risk-engine";
-import type { Direction, ExecutionMode } from "@trading-copilot/shared-types";
+import { calculateExcursions, calculateGrossPnl, calculateNetPnl, calculateRMultiple } from "@trading-copilot/risk-engine";
+import type { Direction, ExecutionMode, PostTradeOutcome, SkipReason, Timeframe } from "@trading-copilot/shared-types";
 import type { JournalTrade } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
 import { JournalTradeStateError, NotFoundError } from "../errors";
 import { mapJournalTrade } from "../mappers";
+import { getCandles } from "./candles";
 import { createJournalEvent } from "./journal-events";
 
 export interface CreateJournalTradeInput {
@@ -19,6 +20,7 @@ export interface CreateJournalTradeInput {
   plannedTarget2?: Decimal | null;
   plannedRisk?: Decimal | null;
   executionMode: Extract<ExecutionMode, "PAPER" | "MANUAL_LIVE" | "SKIPPED">;
+  skipReason?: SkipReason | null;
   entryNotes?: string | null;
 }
 
@@ -48,6 +50,7 @@ export async function createJournalTrade(input: CreateJournalTradeInput): Promis
         executionMode: input.executionMode,
         status: isSkipped ? "SKIPPED" : "PLANNED",
         entryNotes: input.entryNotes ?? null,
+        skipReason: input.skipReason ?? null,
       },
     });
 
@@ -123,8 +126,6 @@ export interface CloseJournalTradeInput {
   exitTimestamp: Date;
   actualFees?: Decimal | null;
   actualSlippage?: Decimal | null;
-  mfe?: Decimal | null;
-  mae?: Decimal | null;
   exitNotes?: string | null;
 }
 
@@ -134,6 +135,7 @@ export interface ComputedJournalTradeClose {
   netPnl: Decimal;
   /** null only when there is no real risk baseline (plannedRisk was never set) — never fabricated as 0. */
   rMultiple: Decimal | null;
+  outcome: PostTradeOutcome;
 }
 
 /**
@@ -161,7 +163,8 @@ export function computeJournalTradeClose(
   // yet). Treat both the same: rMultiple is null, never fabricated as 0.
   const hasRiskBaseline = plannedRisk !== null && plannedRisk.greaterThan(0);
   const rMultiple = hasRiskBaseline ? calculateRMultiple(netPnl, plannedRisk) : null;
-  return { grossPnl, fees, netPnl, rMultiple };
+  const outcome: PostTradeOutcome = netPnl.isZero() ? "BREAKEVEN" : netPnl.isPositive() ? "WIN" : "LOSS";
+  return { grossPnl, fees, netPnl, rMultiple, outcome };
 }
 
 export async function closeJournalTrade(id: string, input: CloseJournalTradeInput): Promise<JournalTrade> {
@@ -181,9 +184,9 @@ export async function closeJournalTrade(id: string, input: CloseJournalTradeInpu
 
     // Guaranteed non-null for an OPEN trade (set by recordJournalTradeEntry),
     // but asserted defensively rather than silently producing a broken row.
-    if (existing.actualEntry === null || existing.quantity === null) {
+    if (existing.actualEntry === null || existing.quantity === null || existing.entryTimestamp === null) {
       throw new Error(
-        `JournalTrade ${id} is OPEN but missing actualEntry/quantity — data integrity violation`,
+        `JournalTrade ${id} is OPEN but missing actualEntry/quantity/entryTimestamp — data integrity violation`,
       );
     }
 
@@ -194,7 +197,7 @@ export async function closeJournalTrade(id: string, input: CloseJournalTradeInpu
     const estimatedFees = existing.estimatedFees === null ? null : new Decimal(existing.estimatedFees.toString());
     const fees = input.actualFees ?? estimatedFees ?? new Decimal(0);
 
-    const { grossPnl, netPnl, rMultiple } = computeJournalTradeClose(
+    const { grossPnl, netPnl, rMultiple, outcome } = computeJournalTradeClose(
       existing.direction,
       actualEntry,
       input.actualExit,
@@ -204,6 +207,40 @@ export async function closeJournalTrade(id: string, input: CloseJournalTradeInpu
       plannedRisk,
     );
 
+    // MFE/MAE, server-computed over real candles between entry and exit —
+    // never client-supplied (see docs/notifications.md and CLAUDE.md
+    // "financial calculations are never independently produced in a
+    // controller"). Only possible when this trade has a Setup lineage (a
+    // timeframe to know which candle series to query) — a manually-logged
+    // trade with setupId: null legitimately has none, and "unknown stays
+    // unknown" (mfe/mae null) rather than a fabricated value or a thrown
+    // error blocking the close.
+    let mfe: Decimal | null = null;
+    let mae: Decimal | null = null;
+    if (existing.setupId !== null) {
+      const setup = await tx.setup.findUnique({
+        where: { id: existing.setupId },
+        include: { marketSnapshot: true },
+      });
+      if (setup) {
+        const candles = await getCandles(
+          existing.instrumentId,
+          setup.marketSnapshot.timeframe as Timeframe,
+          existing.entryTimestamp,
+          input.exitTimestamp,
+        );
+        if (candles.length > 0) {
+          const excursions = calculateExcursions(
+            candles.map((c) => ({ high: c.high, low: c.low })),
+            actualEntry,
+            existing.direction,
+          );
+          mfe = excursions.mfe;
+          mae = excursions.mae;
+        }
+      }
+    }
+
     const row = await tx.journalTrade.update({
       where: { id },
       data: {
@@ -211,12 +248,13 @@ export async function closeJournalTrade(id: string, input: CloseJournalTradeInpu
         exitTimestamp: input.exitTimestamp,
         actualFees: fees.toString(),
         actualSlippage: input.actualSlippage?.toString() ?? null,
-        mfe: input.mfe?.toString() ?? null,
-        mae: input.mae?.toString() ?? null,
+        mfe: mfe?.toString() ?? null,
+        mae: mae?.toString() ?? null,
         exitNotes: input.exitNotes ?? null,
         grossPnl: grossPnl.toString(),
         netPnl: netPnl.toString(),
         rMultiple: rMultiple?.toString() ?? null,
+        outcome,
         status: "CLOSED",
       },
     });
@@ -269,4 +307,88 @@ export async function listJournalTrades(filters: JournalTradeFilters = {}): Prom
     orderBy: { createdAt: "desc" },
   });
   return rows.map(mapJournalTrade);
+}
+
+export interface CreateAndRecordJournalTradeEntryInput {
+  setupId: string;
+  instrumentId: string;
+  strategyId: string;
+  strategyVersionId: string;
+  direction: Direction;
+  plannedEntry: Decimal;
+  plannedStop: Decimal;
+  plannedTarget1: Decimal | null;
+  plannedTarget2: Decimal | null;
+  plannedRisk: Decimal | null;
+  executionMode: Extract<ExecutionMode, "PAPER" | "MANUAL_LIVE">;
+  actualEntry: Decimal;
+  quantity: number;
+  entryTimestamp: Date;
+  actualFees: Decimal | null;
+  actualSlippage: Decimal | null;
+  notes: string | null;
+}
+
+/**
+ * Atomically creates a JournalTrade (PLANNED) and immediately records its
+ * entry (-> OPEN) in one transaction, for the dashboard's single-action
+ * "I ENTERED THIS TRADE"/"PAPER TRADE" buttons — the human is recording one
+ * real-world event (a fill that already happened), not two separate
+ * journal actions, so the API surface should not force a two-step dance
+ * that could be left half-done by a crash between steps.
+ */
+export async function createAndRecordJournalTradeEntry(
+  input: CreateAndRecordJournalTradeEntryInput,
+): Promise<JournalTrade> {
+  return prisma.$transaction(async (tx) => {
+    const created = await tx.journalTrade.create({
+      data: {
+        setupId: input.setupId,
+        instrumentId: input.instrumentId,
+        strategyId: input.strategyId,
+        strategyVersionId: input.strategyVersionId,
+        direction: input.direction,
+        plannedEntry: input.plannedEntry.toString(),
+        plannedStop: input.plannedStop.toString(),
+        plannedTarget1: input.plannedTarget1?.toString() ?? null,
+        plannedTarget2: input.plannedTarget2?.toString() ?? null,
+        plannedRisk: input.plannedRisk?.toString() ?? null,
+        executionMode: input.executionMode,
+        status: "OPEN",
+        actualEntry: input.actualEntry.toString(),
+        entryTimestamp: input.entryTimestamp,
+        quantity: input.quantity,
+        estimatedFees: input.actualFees?.toString() ?? null,
+        estimatedSlippage: input.actualSlippage?.toString() ?? null,
+        entryNotes: input.notes ?? null,
+      },
+    });
+
+    await createJournalEvent(
+      {
+        eventType: "TRADE_READY",
+        entityType: "JOURNAL_TRADE",
+        entityId: created.id,
+        correlationId: input.setupId,
+        instrumentId: created.instrumentId,
+        strategyId: created.strategyId,
+        strategyVersionId: created.strategyVersionId,
+      },
+      tx,
+    );
+    await createJournalEvent(
+      {
+        eventType: "TRADE_EXECUTED",
+        entityType: "JOURNAL_TRADE",
+        entityId: created.id,
+        correlationId: input.setupId,
+        instrumentId: created.instrumentId,
+        strategyId: created.strategyId,
+        strategyVersionId: created.strategyVersionId,
+      },
+      tx,
+    );
+
+    return mapJournalTrade(created);
+  });
 }
