@@ -296,6 +296,12 @@ export async function markNotificationRetrying(
   });
 }
 
+/** Mirrors getScreenshot in trade-screenshots.ts — a plain findUnique, used by NotificationSendProcessor to load the full row (setupId, notificationType) from the BullMQ job's id-only payload. */
+export async function getById(id: string): Promise<NotificationDelivery | null> {
+  const row = await prisma.notificationDelivery.findUnique({ where: { id } });
+  return row ? mapNotificationDelivery(row) : null;
+}
+
 export async function listNotificationsForSetup(setupId: string): Promise<NotificationDelivery[]> {
   const rows = await prisma.notificationDelivery.findMany({
     where: { setupId },
