@@ -270,8 +270,24 @@ export async function closeJournalTrade(id: string, input: CloseJournalTradeInpu
       }
     }
 
-    const row = await tx.journalTrade.update({
-      where: { id },
+    // Guarded with an atomic conditional `updateMany` rather than the
+    // read-then-check-then-`update` this used to do. Under Postgres READ
+    // COMMITTED (no `SELECT ... FOR UPDATE`), the `existing.status !==
+    // "OPEN"` check above is a stale snapshot read at the START of this
+    // transaction — it does not stop two genuinely concurrent
+    // closeJournalTrade calls (e.g. two browser tabs) from both passing that
+    // check and both reaching this point believing the trade is still OPEN.
+    // A plain `update({ where: { id } })` would let the second call silently
+    // overwrite the first's already-committed close data (MFE/MAE, P&L,
+    // outcome) with no error to either caller. `updateMany`'s `where`
+    // accepts an arbitrary filter and Postgres re-evaluates it against the
+    // row's currently-committed state at execution time, not the stale
+    // snapshot read above — so only one of two concurrent closes can ever
+    // match and affect a row. Mirrors markScreenshotReady in
+    // trade-screenshots.ts and markNotificationSent in
+    // notification-deliveries.ts exactly.
+    const result = await tx.journalTrade.updateMany({
+      where: { id, status: "OPEN" },
       data: {
         actualExit: input.actualExit.toString(),
         exitTimestamp: input.exitTimestamp,
@@ -287,6 +303,16 @@ export async function closeJournalTrade(id: string, input: CloseJournalTradeInpu
         status: "CLOSED",
       },
     });
+    if (result.count === 0) {
+      // Someone else concurrently closed this trade between our read above
+      // and this updateMany. Re-fetch the current row to report an accurate
+      // status in the thrown error, rather than guess from the stale
+      // pre-update read.
+      const current = await tx.journalTrade.findUnique({ where: { id } });
+      throw new JournalTradeStateError("close", current?.status ?? "UNKNOWN", "OPEN");
+    }
+
+    const row = await tx.journalTrade.findUniqueOrThrow({ where: { id } });
 
     await createJournalEvent(
       {

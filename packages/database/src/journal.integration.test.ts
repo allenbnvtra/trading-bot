@@ -12,7 +12,7 @@ import {
 import { prisma } from "./client";
 import { toDb8 } from "./test-support/decimal";
 import { getNormalizedTrades } from "./analytics-adapter";
-import { NotFoundError, SetupIncompletePlanError, SetupTransitionError } from "./errors";
+import { JournalTradeStateError, NotFoundError, SetupIncompletePlanError, SetupTransitionError } from "./errors";
 import * as backtestsRepository from "./repositories/backtests";
 import * as instrumentsRepository from "./repositories/instruments";
 import * as journalEventsRepository from "./repositories/journal-events";
@@ -970,5 +970,107 @@ describe.skipIf(!process.env.DATABASE_URL)("journal pipeline (live Postgres)", (
     expect(events[0]?.entityType).toBe("STRATEGY_VERSION");
     expect(events[0]?.entityId).toBe(version.id);
     expect(events[0]?.strategyId).toBe(strategy.id);
+  });
+
+  /**
+   * Tech-debt fix (Milestone 6 final review): closeJournalTrade used to
+   * read the trade's status, throw if not OPEN, then later call a plain
+   * `update({ where: { id } })` with no re-check in the `where` clause — a
+   * genuine check-then-act race under Postgres READ COMMITTED (two
+   * concurrent close calls, e.g. two browser tabs, could both pass the
+   * initial status check and one would silently overwrite the other's close
+   * data). This is fixed with an atomic conditional `updateMany({ where:
+   * { id, status: "OPEN" } })`, mirroring markScreenshotReady in
+   * trade-screenshots.ts and markNotificationSent in
+   * notification-deliveries.ts. This test proves it under real concurrency
+   * (real Promise.all, real Postgres) rather than assuming it: two
+   * genuinely concurrent closeJournalTrade calls against the same OPEN
+   * trade must converge on exactly one successful close, with the loser
+   * throwing JournalTradeStateError rather than silently clobbering the
+   * winner's committed close data.
+   */
+  it("two genuinely concurrent closeJournalTrade calls against the same OPEN trade converge on exactly one close", async () => {
+    const instrument = await instrumentsRepository.findInstrumentBySymbolAndExchange("GENFUT1", "SIM-FUT");
+    expect(instrument).not.toBeNull();
+    if (!instrument) return;
+
+    const strategy = await prisma.strategy.findUnique({ where: { key: "ema-trend-pullback" } });
+    expect(strategy).not.toBeNull();
+    if (!strategy) return;
+
+    const strategyVersion = await prisma.strategyVersion.findUnique({
+      where: { strategyId_version: { strategyId: strategy.id, version: "1.0.0" } },
+    });
+    expect(strategyVersion).not.toBeNull();
+    if (!strategyVersion) return;
+
+    // No Setup lineage (setupId: null) — deliberately keeps this test
+    // focused on the OPEN -> CLOSED race itself, not the mfe/mae candle
+    // lookup (already covered by the tests above).
+    let trade = await journalTradesRepository.createJournalTrade({
+      setupId: null,
+      instrumentId: instrument.id,
+      strategyId: strategy.id,
+      strategyVersionId: strategyVersion.id,
+      direction: "LONG",
+      plannedEntry: new Decimal("100"),
+      plannedStop: new Decimal("95"),
+      plannedTarget1: new Decimal("110"),
+      plannedRisk: new Decimal("5"),
+      executionMode: "PAPER",
+    });
+
+    trade = await journalTradesRepository.recordJournalTradeEntry(trade.id, {
+      actualEntry: new Decimal("100"),
+      entryTimestamp: new Date(),
+      quantity: 1,
+      estimatedFees: new Decimal("0"),
+      estimatedSlippage: new Decimal("0"),
+    });
+    expect(trade.status).toBe("OPEN");
+
+    const closeInputA = {
+      actualExit: new Decimal("110"),
+      exitTimestamp: new Date(),
+      actualFees: new Decimal("0"),
+      actualSlippage: new Decimal("0"),
+      exitNotes: "closed by racer A",
+    };
+    const closeInputB = {
+      actualExit: new Decimal("90"),
+      exitTimestamp: new Date(),
+      actualFees: new Decimal("0"),
+      actualSlippage: new Decimal("0"),
+      exitNotes: "closed by racer B",
+    };
+
+    // Real concurrency: both calls are started together via Promise.
+    // allSettled (not "await the first, then await the second") and race
+    // against the real Postgres row inside closeJournalTrade's own
+    // transaction.
+    const [resultA, resultB] = await Promise.allSettled([
+      journalTradesRepository.closeJournalTrade(trade.id, closeInputA),
+      journalTradesRepository.closeJournalTrade(trade.id, closeInputB),
+    ]);
+
+    const settled = [resultA, resultB];
+    const fulfilled = settled.filter((r) => r.status === "fulfilled");
+    const rejected = settled.filter((r) => r.status === "rejected");
+
+    // Exactly one racer wins the close; the other must throw
+    // JournalTradeStateError, never silently overwrite the winner.
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(JournalTradeStateError);
+
+    const winningExitNotes = (fulfilled[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof journalTradesRepository.closeJournalTrade>>>)
+      .value.exitNotes;
+
+    // The persisted row must match exactly the winner's close data, never a
+    // mix of both racers' inputs and never overwritten after the fact.
+    const finalRow = await journalTradesRepository.getJournalTrade(trade.id);
+    expect(finalRow?.status).toBe("CLOSED");
+    expect(finalRow?.exitNotes).toBe(winningExitNotes);
+    expect([closeInputA.exitNotes, closeInputB.exitNotes]).toContain(finalRow?.exitNotes);
   });
 });
