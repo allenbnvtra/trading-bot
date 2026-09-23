@@ -1011,6 +1011,64 @@ export function generateResearchHypothesis(
   });
 }
 
+// --- Milestone 7: research hypothesis detail (experiment history, agent execution audit) ---
+//
+// Added here (Task 12) rather than alongside ResearchHypothesis (Task 11)
+// deliberately, per the composite getResearchHypothesis(id) note above -
+// these mirror packages/trading-domain/src/research-entities.ts's
+// ResearchExperiment/ResearchDatasetRole/AgentExecution by hand, same
+// convention as every other type in this file. Date/Decimal fields come back
+// from the API as strings, never recomputed here.
+
+export type ResearchExperimentStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+export type ResearchDatasetRole = "RESEARCH" | "VALIDATION" | "FINAL_TEST" | "WALK_FORWARD";
+
+export interface ResearchExperiment {
+  id: string;
+  hypothesisId: string;
+  datasetRole: ResearchDatasetRole;
+  datasetWindowStart: string;
+  datasetWindowEnd: string;
+  backtestId: string | null;
+  status: ResearchExperimentStatus;
+  failureReason: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+/**
+ * A dashboard-local summary of the AgentExecution that produced this
+ * hypothesis - a narrower view than the full `AgentExecution` interface
+ * above (drops agentType/inputSummary/outputParsed/errorMessage, which the
+ * detail page's audit section doesn't render).
+ */
+export interface AgentExecutionSummary {
+  id: string;
+  provider: AIProviderType;
+  model: string;
+  promptVersion: string;
+  status: AgentExecutionStatus;
+  tokensInput: number | null;
+  tokensOutput: number | null;
+  costUsd: string | null;
+  outputRaw: string | null;
+  startedAt: string;
+  completedAt: string | null;
+}
+
+export interface ResearchHypothesisDetail {
+  hypothesis: ResearchHypothesis & {
+    sourceDataSummary: Record<string, unknown>;
+    proposedStrategyDefinition: Record<string, unknown>;
+  };
+  experiments: ResearchExperiment[];
+  agentExecution: AgentExecutionSummary;
+}
+
+export function getResearchHypothesis(id: string): Promise<ResearchHypothesisDetail> {
+  return apiFetch<ResearchHypothesisDetail>(`/research/hypotheses/${id}`);
+}
+
 export interface WebhookReceivedRealtimeEvent {
   type: "webhook.received";
   timestamp: string;

@@ -1,12 +1,16 @@
 import type {
+  AgentExecutionStatus,
   BacktestStatus,
   Direction,
   ExecutionMode,
+  HypothesisConfidence,
   JournalEventType,
   JournalTradeStatus,
   NormalizedTradeSource,
   NotificationDeliveryStatus,
   PostTradeOutcome,
+  ResearchExperimentStatus,
+  ResearchHypothesisStatus,
   ScreenshotStatus,
   SetupSource,
   SetupStatus,
@@ -161,6 +165,50 @@ const NOTIFICATION_DELIVERY_STATUS_CLASS: Record<NotificationDeliveryStatus, str
 
 export function NotificationDeliveryStatusBadge({ status }: { status: NotificationDeliveryStatus }) {
   return <span className={`badge ${NOTIFICATION_DELIVERY_STATUS_CLASS[status]}`}>{status}</span>;
+}
+
+const RESEARCH_EXPERIMENT_STATUS_CLASS: Record<ResearchExperimentStatus, string> = {
+  QUEUED: "badge--queued",
+  RUNNING: "badge--running",
+  COMPLETED: "badge--completed",
+  FAILED: "badge--failed",
+};
+
+export function ResearchExperimentStatusBadge({ status }: { status: ResearchExperimentStatus }) {
+  return <span className={`badge ${RESEARCH_EXPERIMENT_STATUS_CLASS[status]}`}>{status}</span>;
+}
+
+const AGENT_EXECUTION_STATUS_CLASS: Record<AgentExecutionStatus, string> = {
+  RUNNING: "badge--running",
+  SUCCEEDED: "badge--success",
+  FAILED: "badge--danger",
+};
+
+export function AgentExecutionStatusBadge({ status }: { status: AgentExecutionStatus }) {
+  return <span className={`badge ${AGENT_EXECUTION_STATUS_CLASS[status]}`}>{status}</span>;
+}
+
+const HYPOTHESIS_STATUS_CLASS: Record<ResearchHypothesisStatus, string> = {
+  PROPOSED: "badge--neutral",
+  EXPERIMENT_QUEUED: "badge--queued",
+  IN_PROGRESS: "badge--running",
+  VALIDATED: "badge--success",
+  REJECTED: "badge--danger",
+  ABANDONED: "badge--neutral",
+};
+
+export function HypothesisStatusBadge({ status }: { status: ResearchHypothesisStatus }) {
+  return <span className={`badge ${HYPOTHESIS_STATUS_CLASS[status]}`}>{status}</span>;
+}
+
+const HYPOTHESIS_CONFIDENCE_CLASS: Record<HypothesisConfidence, string> = {
+  LOW: "badge--neutral",
+  MEDIUM: "badge--info",
+  HIGH: "badge--success",
+};
+
+export function HypothesisConfidenceBadge({ confidence }: { confidence: HypothesisConfidence }) {
+  return <span className={`badge ${HYPOTHESIS_CONFIDENCE_CLASS[confidence]}`}>{confidence}</span>;
 }
 
 export const EVENT_TYPE_LABELS: Record<JournalEventType, string> = {
