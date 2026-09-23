@@ -279,7 +279,11 @@ async function assertResearchExperimentPreconditions(
  * FinalTestAlreadySpentError) fires on the experiment insert. Any rejection
  * therefore rolls back the Backtest too, so no orphan Backtest row is ever
  * left behind (the MEDIUM-6 finding from the Milestone 7 final review).
- * The caller enqueues the backtest job only after this commits.
+ * The RESEARCH_EXPERIMENT_CREATED journal event is written in the same
+ * transaction (the markResearchExperimentCompleted/Failed pattern), so it
+ * can never diverge from whether the row actually exists (the M2 finding
+ * from the fix-wave-1 review). The caller enqueues the backtest job only
+ * after this commits.
  *
  * `backtest` is optional only so repository-level tests can exercise the
  * stage logic without a Backtest; ResearchService always passes it.
@@ -307,6 +311,19 @@ async function createResearchExperiment(input: {
           status: "QUEUED",
         },
       });
+
+      const context = await experimentEventContext(tx, row.backtestId);
+      await createJournalEvent(
+        {
+          eventType: "RESEARCH_EXPERIMENT_CREATED",
+          entityType: "RESEARCH_EXPERIMENT",
+          entityId: row.id,
+          ...context,
+          metadata: { hypothesisId: row.hypothesisId, datasetRole: row.datasetRole, backtestId: row.backtestId },
+        },
+        tx,
+      );
+
       return mapResearchExperiment(row);
     });
   } catch (error) {

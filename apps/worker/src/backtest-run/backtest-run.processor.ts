@@ -36,9 +36,10 @@ function isStrategyKey(key: string): key is StrategyKey {
  * duplicated backtest logic). A research-originated Backtest has exactly
  * one ResearchExperiment (ResearchExperiment.backtestId is unique); a plain
  * POST /backtests Backtest has none, and for it the research hooks below are
- * a single null lookup and nothing else. Every research status transition
- * is an atomic conditional update in the repository (a retried job can
- * never double-complete, un-fail, or relabel a COMPLETED experiment FAILED).
+ * one null getResearchExperimentByBacktestId lookup per hook point (success,
+ * or failure) and nothing else. Every research status transition is an
+ * atomic conditional update in the repository (a retried job can never
+ * double-complete, un-fail, or relabel a COMPLETED experiment FAILED).
  */
 @Processor(BACKTEST_RUN_QUEUE, { concurrency: WORKER_CONCURRENCY })
 export class BacktestRunProcessor extends WorkerHost {

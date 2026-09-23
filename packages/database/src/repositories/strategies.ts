@@ -216,8 +216,19 @@ export async function markPaperCandidate(id: string): Promise<StrategyVersion | 
 /** Automatic (experiment-driven) status advances never go past this; PAPER_CANDIDATE onward is human-gated. */
 const MAX_AUTOMATIC_STRATEGY_VERSION_STATUS: StrategyVersionStatus = "WALK_FORWARD";
 
+/**
+ * Throws on an unrecognized status rather than returning indexOf's -1: a
+ * silent -1 would rank below DISCOVERED (rank 0), letting
+ * advanceStrategyVersionStatus's "only moves forward" guard be bypassed by
+ * enum drift (a status value present in the database but missing from
+ * STRATEGY_VERSION_STATUSES) instead of failing loudly.
+ */
 function strategyVersionStatusRank(status: StrategyVersionStatus): number {
-  return STRATEGY_VERSION_STATUSES.indexOf(status);
+  const rank = STRATEGY_VERSION_STATUSES.indexOf(status);
+  if (rank === -1) {
+    throw new Error(`strategyVersionStatusRank: unrecognized StrategyVersionStatus "${status}"`);
+  }
+  return rank;
 }
 
 /**

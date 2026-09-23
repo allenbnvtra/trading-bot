@@ -73,8 +73,8 @@ describe.skipIf(!process.env.DATABASE_URL)("research pipeline hardening (live Po
     await researchRepository.markAgentExecutionSucceeded(execution.id, {
       outputRaw: "{}",
       outputParsed: {},
-      tokensInput: 1,
-      tokensOutput: 1,
+      tokensInput: 0,
+      tokensOutput: 0,
       costUsd: new Decimal(0),
     });
     return researchRepository.createResearchHypothesis({
@@ -135,6 +135,20 @@ describe.skipIf(!process.env.DATABASE_URL)("research pipeline hardening (live Po
 
       const found = await researchRepository.getResearchExperimentByBacktestId(experiment.backtestId!);
       expect(found?.id).toBe(experiment.id);
+
+      // RESEARCH_EXPERIMENT_CREATED is written inside the same transaction
+      // as the experiment/Backtest insert (fix-wave-1 review, M2): it must
+      // exist for every experiment createResearchExperiment successfully
+      // returns.
+      const event = await prisma.journalEvent.findFirst({
+        where: { entityId: experiment.id, eventType: "RESEARCH_EXPERIMENT_CREATED" },
+      });
+      expect(event).not.toBeNull();
+      expect(event?.entityType).toBe("RESEARCH_EXPERIMENT");
+      const metadata = event?.metadata as { hypothesisId?: string; datasetRole?: string; backtestId?: string };
+      expect(metadata.hypothesisId).toBe(hypothesis.id);
+      expect(metadata.datasetRole).toBe("RESEARCH");
+      expect(metadata.backtestId).toBe(experiment.backtestId);
     });
 
     it("returns null from getResearchExperimentByBacktestId for a plain (non-research) Backtest", async () => {

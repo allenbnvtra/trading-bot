@@ -166,29 +166,6 @@ describe("ResearchService.createExperiment", () => {
     researchRepository.assertResearchExperimentPreconditions.mockResolvedValue(undefined);
   });
 
-  it("records a RESEARCH_EXPERIMENT_CREATED journal event for the persisted experiment", async () => {
-    researchRepository.getResearchHypothesis.mockResolvedValue({ id: "hypothesis-1" });
-    instrumentsRepository.getInstrument.mockResolvedValue({ commissionPerContract: new Decimal("2.5") });
-    strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(makeStrategyVersion());
-    researchRepository.createResearchExperiment.mockResolvedValue(
-      makeExperiment({ id: "experiment-new", datasetRole: "RESEARCH", status: "QUEUED", completedAt: null }),
-    );
-
-    const experiment = await service.createExperiment("hypothesis-1", RESEARCH_EXPERIMENT_INPUT as never);
-
-    expect(experiment.id).toBe("experiment-new");
-    expect(journalEventsRepository.createJournalEvent).toHaveBeenCalledTimes(1);
-    expect(journalEventsRepository.createJournalEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: "RESEARCH_EXPERIMENT_CREATED",
-        entityType: "RESEARCH_EXPERIMENT",
-        entityId: "experiment-new",
-        strategyVersionId: "strategy-version-1",
-        metadata: expect.objectContaining({ hypothesisId: "hypothesis-1", datasetRole: "RESEARCH", backtestId: "backtest-1" }),
-      }),
-    );
-  });
-
   it("creates the Backtest inside createResearchExperiment and enqueues it onto BACKTEST_RUN_QUEUE", async () => {
     researchRepository.getResearchHypothesis.mockResolvedValue({ id: "hypothesis-1" });
     instrumentsRepository.getInstrument.mockResolvedValue({ commissionPerContract: new Decimal("2.5") });

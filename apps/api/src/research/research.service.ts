@@ -3,7 +3,6 @@ import { ConflictException, Injectable, NotFoundException } from "@nestjs/common
 import type { Queue } from "bullmq";
 import {
   instrumentsRepository,
-  journalEventsRepository,
   researchRepository,
   strategiesRepository,
   ResearchBudgetExceededError,
@@ -229,16 +228,10 @@ export class ResearchService {
       throw new Error(`ResearchExperiment ${experiment.id} was created without its Backtest`);
     }
 
-    await journalEventsRepository.createJournalEvent({
-      eventType: "RESEARCH_EXPERIMENT_CREATED",
-      entityType: "RESEARCH_EXPERIMENT",
-      entityId: experiment.id,
-      instrumentId: input.instrumentId,
-      strategyId: strategyVersion.strategyId,
-      strategyVersionId: strategyVersion.id,
-      metadata: { hypothesisId, datasetRole: experiment.datasetRole, backtestId },
-    });
-
+    // The RESEARCH_EXPERIMENT_CREATED journal event is written inside
+    // researchRepository.createResearchExperiment's own transaction (see
+    // its doc comment), so it can never diverge from whether the row
+    // actually exists.
     await this.backtestQueue.add(BACKTEST_RUN_JOB, { backtestId });
 
     return experiment;
