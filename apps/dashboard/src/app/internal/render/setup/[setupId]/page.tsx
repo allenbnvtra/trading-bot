@@ -4,6 +4,7 @@ import {
   getLatestRiskCalculation,
   getMarketSnapshot,
   getSetup,
+  getStrategy,
 } from "@/lib/api";
 // This file is an `async` Server Component (no "use client" directive), so
 // it executes only on the Node.js server - Next.js's App Router never ships
@@ -25,11 +26,14 @@ import RenderClient from "./RenderClient";
  *
  * This route calls, server-side, only: GET /setups/:id, GET
  * /market-snapshots/:id, GET /setups/:id/risk-calculations/latest
- * (best-effort, 404 tolerated), GET /instruments/:id, and the cutoff-safe
- * GET /market-data/candles endpoint. It must never call any journal/trades
- * endpoint - that is the structural anti-look-ahead guarantee for this
- * route (a PRE_TRADE screenshot must be provably unable to see how the
- * trade actually turned out).
+ * (best-effort, 404 tolerated), GET /instruments/:id, GET /strategies/:id
+ * (best-effort, for a human-readable strategy name only), and the
+ * cutoff-safe GET /market-data/candles endpoint. It must never call any
+ * journal/trades endpoint - that is the structural anti-look-ahead
+ * guarantee for this route (a PRE_TRADE screenshot must be provably unable
+ * to see how the trade actually turned out). GET /strategies/:id is a
+ * strategy-definition lookup, not a journal/trades/outcome endpoint, so
+ * calling it does not weaken that guarantee.
  */
 export default async function RenderSetupPage({
   params,
@@ -82,13 +86,14 @@ export default async function RenderSetupPage({
     );
   }
 
-  // No GET /strategies/:id call is made from this route (only the five
-  // endpoints listed above are ever called here), so the strategy label is
-  // rendered from the raw ids already on the Setup, matching
-  // apps/dashboard/src/app/setups/[id]/page.tsx's existing convention of
-  // showing setup.strategyId/setup.strategyVersionId as-is when no separate
-  // strategy-name lookup is made.
-  const strategyLabel = `${setup.strategyId} / ${setup.strategyVersionId}`;
+  // Best-effort strategy-name lookup, same pattern as the RiskCalculation
+  // fetch above (`.catch(() => null)`). GET /strategies/:id is a
+  // strategy-definition endpoint, not a journal/trades/outcome endpoint, so
+  // calling it here doesn't touch the anti-look-ahead guarantee this route
+  // is built around. Falls back to the raw strategyId - never a fabricated
+  // name - if the lookup fails for any reason.
+  const strategy = await getStrategy(setup.strategyId).catch(() => null);
+  const strategyLabel = strategy?.name ?? setup.strategyId;
 
   return (
     <RenderClient
