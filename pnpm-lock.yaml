@@ -126,9 +126,6 @@ importers:
 
   apps/dashboard:
     dependencies:
-      '@trading-copilot/shared-types':
-        specifier: workspace:*
-        version: link:../../packages/shared-types
       lightweight-charts:
         specifier: ^5.2.1
         version: 5.2.1

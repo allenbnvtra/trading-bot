@@ -3,7 +3,14 @@
 import { useEffect, useRef } from "react";
 import { CandlestickSeries, LineStyle, createChart } from "lightweight-charts";
 import type { IChartApi, ISeriesApi, UTCTimestamp } from "lightweight-charts";
-import { SCREENSHOT_RENDER_HEIGHT, SCREENSHOT_RENDER_WIDTH } from "@trading-copilot/shared-types";
+
+// Mirrors packages/shared-types/src/screenshot.ts's SCREENSHOT_RENDER_WIDTH/HEIGHT -
+// the dashboard never takes a workspace dependency on @trading-copilot/shared-types
+// (apps/dashboard/src/lib/api.ts documents why: it stays decoupled from backend
+// package internals, and that package's CJS barrel also transitively pulls in
+// node:crypto via tradingview.ts, which is unsafe in a client bundle).
+const SCREENSHOT_RENDER_WIDTH = 1440;
+const SCREENSHOT_RENDER_HEIGHT = 900;
 
 export interface ChartRendererCandle {
   timestamp: string;
@@ -96,10 +103,55 @@ export default function ChartRenderer(props: ChartRendererProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const { candles, annotations, onReady, onError } = props;
 
+  // Everything that reads a prop and could throw during React's synchronous
+  // render pass - not just the chart-drawing effect below - is computed here,
+  // inside a try/catch, before any JSX that would reference those props is
+  // built. This is deliberately not a defensive-typing exercise: this
+  // component ultimately renders data sourced from a database
+  // Record<string, unknown>-ish field via an API boundary, so a runtime shape
+  // mismatch that TypeScript's static types can't catch (e.g. a malformed
+  // `instrument`) is a real possibility. If this throws, `onError` fires and
+  // we render fallback markup instead of the chart, so
+  // `document.body.dataset.renderState` is always set one way or the other
+  // and Playwright never hangs waiting for a signal that was never sent.
+  let renderError: unknown = null;
+  let headerLine1 = "";
+  let headerLine2 = "";
+  let infoRows: [string, string | number][] = [];
+
+  try {
+    headerLine1 = `${props.instrument.symbol} - ${props.timeframe} - ${props.strategyLabel}`;
+    headerLine2 = `${props.direction} - ${props.status} - ${props.decisionTimestamp} - tick ${props.instrument.tickSize}`;
+    // A `null` infoPanel value means "not applicable to this setup/trade" and
+    // is omitted from the panel entirely, per the Task 6 brief. This is its
+    // own convention, not a match for anything else in the dashboard - e.g.
+    // `apps/dashboard/src/app/setups/[id]/page.tsx`'s `plannedPriceValue`
+    // renders a "Not set" placeholder for a null price rather than omitting
+    // the row, which is a different (also valid) choice for a different
+    // context.
+    infoRows = Object.entries(props.infoPanel).filter(
+      (entry): entry is [string, string | number] => entry[1] !== null,
+    );
+  } catch (err) {
+    renderError = err;
+  }
+
   useEffect(() => {
     let chart: IChartApi | null = null;
     let rafId: number | null = null;
     let cancelled = false;
+
+    if (renderError !== null) {
+      // Already reported at render time (below); nothing to draw.
+      try {
+        onError("RENDER_EXCEPTION", String(renderError));
+      } catch {
+        // Best-effort; there is nothing further we can do if onError itself throws.
+      }
+      return () => {
+        cancelled = true;
+      };
+    }
 
     try {
       const container = containerRef.current;
@@ -185,11 +237,14 @@ export default function ChartRenderer(props: ChartRendererProps) {
         // Best-effort cleanup after unmount; nothing left to signal.
       }
     };
-  }, [candles, annotations, onReady, onError]);
+  }, [renderError, candles, annotations, onReady, onError]);
 
-  const infoRows = Object.entries(props.infoPanel).filter(
-    (entry): entry is [string, string | number] => entry[1] !== null,
-  );
+  if (renderError !== null) {
+    // The error was already reported to onError above (in the effect); this
+    // is deliberately not the chart - just inert fallback markup so React
+    // never has to throw past this point for the same bad props.
+    return <div data-chart-renderer-state="error" style={{ display: "none" }} />;
+  }
 
   return (
     <div
@@ -201,12 +256,8 @@ export default function ChartRenderer(props: ChartRendererProps) {
       }}
     >
       <div style={{ padding: "12px 16px", borderBottom: "1px solid #e5e7eb" }}>
-        <div style={{ fontSize: 16, fontWeight: 600 }}>
-          {props.instrument.symbol} - {props.timeframe} - {props.strategyLabel}
-        </div>
-        <div style={{ fontSize: 13, color: "#4b5563" }}>
-          {props.direction} - {props.status} - {props.decisionTimestamp} - tick {props.instrument.tickSize}
-        </div>
+        <div style={{ fontSize: 16, fontWeight: 600 }}>{headerLine1}</div>
+        <div style={{ fontSize: 13, color: "#4b5563" }}>{headerLine2}</div>
       </div>
       <div
         ref={containerRef}
