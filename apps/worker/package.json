@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
     "test": "vitest run",
-    "notification:test": "tsx scripts/notification-test.ts"
+    "notification:test": "tsx scripts/notification-test.ts",
+    "research:test": "tsx scripts/research-test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.122.0",

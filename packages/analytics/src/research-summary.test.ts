@@ -1,6 +1,5 @@
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
-import type { NormalizedTrade } from "@trading-copilot/trading-domain";
 import { assertSampleSizeGuardrails, buildResearchDataSummary, type EnrichedJournalTrade } from "./research-summary";
 
 function trade(overrides: Partial<EnrichedJournalTrade>): EnrichedJournalTrade {
