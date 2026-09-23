@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { Decimal } from "decimal.js";
 import { describe, expect, it } from "vitest";
 import { prisma } from "./client";
@@ -258,5 +259,64 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
 
     const rows = await prisma.tradeScreenshot.findMany({ where: { setupId: requestInput.setupId! } });
     expect(rows).toHaveLength(1);
+  });
+
+  /**
+   * Bundled fix from Task 12 review: the four tests above only ever
+   * exercise the setup-keyed @@unique([setupId, type, chartConfigVersion])
+   * constraint. requestOrRetryScreenshot has a second, independent
+   * idempotency path keyed on @@unique([tradeId, tradeSource, type,
+   * chartConfigVersion]) (see findByIdempotencyKey's tradeId branch and
+   * the POST_TRADE isUniqueConstraintViolation field list in
+   * trade-screenshots.ts) that was otherwise never exercised by this file.
+   * No JournalTrade row is required - tradeId/tradeSource are plain
+   * columns on TradeScreenshot with no foreign key to JournalTrade (see
+   * schema.prisma), matching the existing convention in
+   * repositories/trade-screenshots.test.ts's own postTradeInput().
+   */
+  it("the trade-keyed idempotency key is genuinely exercised: same-request-twice and real concurrent requests both collapse to one row", async () => {
+    const requestInput: RequestScreenshotInput = {
+      setupId: null,
+      tradeId: `trade-${randomUUID()}`,
+      tradeSource: "JOURNAL_TRADE",
+      type: "POST_TRADE",
+      marketSnapshotId: null,
+      chartConfigVersion: CHART_CONFIG_VERSION,
+    };
+
+    // Same request twice, sequentially.
+    const first = await requestOrRetryScreenshot(requestInput);
+    const second = await requestOrRetryScreenshot(requestInput);
+    expect(second.screenshot.id).toBe(first.screenshot.id);
+    expect(second.alreadyInFlight).toBe(true);
+
+    const rowsAfterSequential = await prisma.tradeScreenshot.findMany({
+      where: { tradeId: requestInput.tradeId!, tradeSource: requestInput.tradeSource! },
+    });
+    expect(rowsAfterSequential).toHaveLength(1);
+
+    // A second, distinct trade-keyed request, this time raced for real via
+    // Promise.all against the same real Postgres @@unique constraint on
+    // (tradeId, tradeSource, type, chartConfigVersion).
+    const concurrentInput: RequestScreenshotInput = {
+      setupId: null,
+      tradeId: `trade-${randomUUID()}`,
+      tradeSource: "JOURNAL_TRADE",
+      type: "POST_TRADE",
+      marketSnapshotId: null,
+      chartConfigVersion: CHART_CONFIG_VERSION,
+    };
+    const [a, b] = await Promise.all([
+      requestOrRetryScreenshot(concurrentInput),
+      requestOrRetryScreenshot(concurrentInput),
+    ]);
+    expect(a.screenshot.id).toBe(b.screenshot.id);
+    const flags = [a.alreadyInFlight, b.alreadyInFlight].sort();
+    expect(flags).toEqual([false, true]);
+
+    const rowsAfterConcurrent = await prisma.tradeScreenshot.findMany({
+      where: { tradeId: concurrentInput.tradeId!, tradeSource: concurrentInput.tradeSource! },
+    });
+    expect(rowsAfterConcurrent).toHaveLength(1);
   });
 });

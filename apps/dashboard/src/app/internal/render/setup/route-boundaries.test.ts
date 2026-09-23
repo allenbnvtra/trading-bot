@@ -23,11 +23,27 @@ import { describe, expect, it } from "vitest";
  * The guard is checked against the file's code with comments stripped, not
  * its raw text. The route's own doc comments (see page.tsx) legitimately
  * discuss the anti-look-ahead guarantee in prose and mention the literal
- * strings "journal/trades" and "getJournalTrade" while explaining what must
- * never be imported - matching raw source text would make this test fail
- * permanently against its own documentation. Stripping comments first keeps
- * the check honest: it only ever fires on a real import or a real call in
- * executable code.
+ * string "journal/trades" three times while explaining what must never be
+ * called (grep-confirmed: "getJournalTrade" itself does not appear anywhere
+ * in page.tsx, only "journal/trades" does) - matching raw source text would
+ * make this test fail permanently against its own documentation. Stripping
+ * comments first keeps the check honest: it only ever fires on a real
+ * import or a real call in executable code.
+ *
+ * Comment stripping is deliberately line-anchored (`^\s*\/\/.*$`, a whole
+ * line that is only a `//` comment) rather than "strip from the first `//`
+ * to end of line anywhere in the line". The latter is unsound: a real
+ * violation like `fetch("https://api.example.com/journal/trades/123")`
+ * contains `//` inside the string literal (from `https://`), so a
+ * match-anywhere strip would truncate the line at that `//` and delete the
+ * `journal/trades` substring along with it - a false negative that lets a
+ * real violation through undetected. This file's own comment convention
+ * (grep-verified below) is block comments for docs plus standalone `//`
+ * lines - no line in page.tsx has real code followed by a trailing `//`
+ * comment - so the line-anchored strip is sound for this specific file. It
+ * would NOT be sound for a file that mixes trailing inline comments with
+ * code on the same line; that would need real tokenization (e.g. the
+ * TypeScript compiler API), not a regex.
  *
  * As of this route's Task 7 review, the file's real import list is (see
  * page.tsx's own doc comment): getSetup, getMarketSnapshot, getInstrument,
@@ -42,9 +58,17 @@ describe("PRE_TRADE render route anti-look-ahead boundary", () => {
 
   const FORBIDDEN_PATTERN = /getJournalTrade|journal\/trades/;
 
-  /** Strips /* block *\/ and // line comments so doc-comment prose can't trip the guard below. */
+  /**
+   * Strips `/* block *\/` comments and whole-line `//` comments (a line
+   * that is only whitespace followed by `//`) so doc-comment prose can't
+   * trip the guard below. Deliberately does NOT strip a trailing `//`
+   * appearing after real code on the same line - see this file's top
+   * doc comment for why that would be unsound (it would truncate a
+   * violation like `fetch("https://.../journal/trades/1")` at the `//`
+   * inside the URL and silently drop the forbidden substring).
+   */
   function stripComments(code: string): string {
-    return code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+    return code.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   }
 
   const codeOnly = stripComments(source);
@@ -78,8 +102,50 @@ describe("PRE_TRADE render route anti-look-ahead boundary", () => {
     expect(stillClean).not.toMatch(FORBIDDEN_PATTERN);
   });
 
+  /**
+   * Regression test for a real reviewer-caught bug: an earlier version of
+   * `stripComments` stripped from the first `//` anywhere on a line to
+   * end-of-line, which silently truncated an absolute-URL call like
+   * `fetch("https://api.example.com/journal/trades/123")` at the `//`
+   * inside `https://`, deleting the `journal/trades` substring along with
+   * it and letting a genuine violation through the guard undetected
+   * (demonstrated: raw text matched FORBIDDEN_PATTERN, but the
+   * old-algorithm stripped result was `fetch("https:` and did not).
+   * The line-anchored strip above must not have this blind spot.
+   */
+  it("the guard catches an absolute-URL call to a journal/trades endpoint, not just a relative path", () => {
+    const taintedLine = `  fetch("https://api.example.com/journal/trades/123");`;
+    const tainted = `${source}\n${taintedLine}`;
+
+    // Sanity: the raw tainted line does contain the forbidden substring.
+    expect(taintedLine).toMatch(FORBIDDEN_PATTERN);
+
+    const strippedTainted = stripComments(tainted);
+    // The line-anchored strip must leave this line untouched (it is real
+    // code, not a whole-line `//` comment), so the guard still catches it.
+    expect(strippedTainted).toContain(taintedLine);
+    expect(strippedTainted).toMatch(FORBIDDEN_PATTERN);
+  });
+
   it("sanity-checks the source was actually read (non-trivial file, references the real render pipeline)", () => {
     expect(source.length).toBeGreaterThan(100);
     expect(source).toMatch(/RenderClient/);
+  });
+
+  /**
+   * Confirms the precondition the top doc comment relies on: no line in
+   * the real route file mixes real code with a trailing `//` comment on
+   * the same line (this file's convention is block comments for docs plus
+   * standalone `//` lines). If this ever stops being true, the
+   * line-anchored `stripComments` above would need to become a real
+   * tokenizer instead of a regex - this test exists so that change in the
+   * route file surfaces here rather than silently reintroducing the
+   * match-anywhere blind spot.
+   */
+  it("the real route file has no line mixing code with a trailing // comment (line-anchored stripping precondition)", () => {
+    const codeWithTrailingComment = source
+      .split("\n")
+      .filter((line) => /\/\//.test(line) && !/^\s*\/\//.test(line));
+    expect(codeWithTrailingComment).toEqual([]);
   });
 });
