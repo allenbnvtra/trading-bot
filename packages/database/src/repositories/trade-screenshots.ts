@@ -149,11 +149,41 @@ export async function requestOrRetryScreenshot(
       }
 
       if (existing) {
+        // Guarded with an atomic conditional `updateMany` rather than a
+        // plain `update({ where: { id } })` — the same bug class fixed for
+        // NotificationDelivery's requestOrRetryNotification (see that
+        // function's doc comment in notification-deliveries.ts). Two
+        // genuinely concurrent retries of the same FAILED row could
+        // otherwise both pass the `existing.status !== "FAILED"` check
+        // above (a stale snapshot read) and both "win" the FAILED ->
+        // REQUESTED reset, with the second silently clobbering the first's
+        // already-committed reset. `updateMany`'s `where` is re-evaluated
+        // against the row's currently-committed status at execution time,
+        // so only one racer can ever match.
         const previousFailureCode = existing.failureCode;
-        const retried = await tx.tradeScreenshot.update({
-          where: { id: existing.id },
+        const result = await tx.tradeScreenshot.updateMany({
+          where: { id: existing.id, status: "FAILED" },
           data: { status: "REQUESTED", failureCode: null, failureMessage: null },
         });
+
+        if (result.count === 0) {
+          // Someone else concurrently won the FAILED -> REQUESTED reset
+          // between our read above and this updateMany. Re-read whatever
+          // they left behind rather than treat this call as a fresh
+          // winner — mirrors the P2002 catch path below, which does the
+          // same thing for the create race, and
+          // requestOrRetryNotification's identical miss-path.
+          const current = await findByIdempotencyKey(tx, input);
+          if (!current) {
+            // Unreachable in practice: we just observed this row inside
+            // the same transaction. Surface a real error rather than
+            // fabricate one.
+            throw new NotFoundError("TradeScreenshot", existing.id);
+          }
+          return { screenshot: mapTradeScreenshot(current), alreadyInFlight: true };
+        }
+
+        const retried = await tx.tradeScreenshot.findUniqueOrThrow({ where: { id: existing.id } });
 
         await createJournalEvent(
           {

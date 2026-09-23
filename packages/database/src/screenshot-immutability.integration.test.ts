@@ -8,6 +8,7 @@ import * as marketSnapshotsRepository from "./repositories/market-snapshots";
 import * as setupsRepository from "./repositories/setups";
 import {
   getScreenshot,
+  markScreenshotFailed,
   markScreenshotGenerating,
   markScreenshotReady,
   requestOrRetryScreenshot,
@@ -323,5 +324,64 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
       where: { tradeId: concurrentInput.tradeId!, tradeSource: concurrentInput.tradeSource! },
     });
     expect(rowsAfterConcurrent).toHaveLength(1);
+  });
+
+  /**
+   * Tech-debt fix (Milestone 6 final review): requestOrRetryScreenshot's
+   * FAILED -> REQUESTED retry-reset branch used to call a plain
+   * `update({ where: { id } })` with no `status: "FAILED"` guard in the
+   * `where` clause — the exact same bug class already found and fixed for
+   * NotificationDelivery's requestOrRetryNotification (see that function's
+   * doc comment and its own "two genuinely concurrent requests, one
+   * FAILED-retry race" test in notification-idempotency.integration.
+   * test.ts, which this test mirrors). Two genuinely concurrent retries of
+   * the same FAILED row could otherwise both "win" the reset. Fixed with an
+   * atomic conditional `updateMany({ where: { id, status: "FAILED" } })`,
+   * identical in shape to requestOrRetryNotification's own fix.
+   */
+  it("two genuinely concurrent requests, one FAILED-retry race, still converge on one row (real Promise.all, real Postgres)", async () => {
+    const { snapshot, setup } = await freshReadySetup();
+    const requestInput: RequestScreenshotInput = {
+      setupId: setup.id,
+      tradeId: null,
+      tradeSource: null,
+      type: "PRE_TRADE",
+      marketSnapshotId: snapshot.id,
+      chartConfigVersion: CHART_CONFIG_VERSION,
+      correlationSetupId: setup.id,
+    };
+
+    const created = await requestOrRetryScreenshot(requestInput);
+    await markScreenshotGenerating(created.screenshot.id);
+    await markScreenshotFailed(created.screenshot.id, {
+      failureCode: "RENDER_TIMEOUT",
+      failureMessage: "chart render timed out",
+    });
+
+    const [a, b] = await Promise.all([
+      requestOrRetryScreenshot(requestInput),
+      requestOrRetryScreenshot(requestInput),
+    ]);
+
+    expect(a.screenshot.id).toBe(created.screenshot.id);
+    expect(b.screenshot.id).toBe(created.screenshot.id);
+
+    // Exactly one of the two racers actually won the FAILED -> REQUESTED
+    // reset (alreadyInFlight: false); the other observed the winner's row
+    // rather than resetting it a second time. Without this assertion, a
+    // regression to a plain `update()` keyed only on `id` (no `status:
+    // "FAILED"` guard) would still pass "1 row exists" while letting both
+    // racers win.
+    const flags = [a.alreadyInFlight, b.alreadyInFlight];
+    expect(flags.filter((f) => f === false)).toHaveLength(1);
+    expect(flags.filter((f) => f === true)).toHaveLength(1);
+
+    const rows = await prisma.tradeScreenshot.findMany({
+      where: { setupId: setup.id, type: "PRE_TRADE", chartConfigVersion: CHART_CONFIG_VERSION },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe("REQUESTED");
+    expect(rows[0]!.failureCode).toBeNull();
+    expect(rows[0]!.failureMessage).toBeNull();
   });
 });
