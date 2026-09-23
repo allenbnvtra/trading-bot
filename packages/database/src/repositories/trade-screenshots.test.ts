@@ -423,27 +423,40 @@ describe.skipIf(!process.env.DATABASE_URL)("trade-screenshots repository (live P
    */
   it("findMostRecentReadyScreenshot returns the most recently rendered READY row", async () => {
     const created = await requestOrRetryScreenshot(postTradeInput());
-    // 100 years past the moment this test actually runs, so it is strictly
-    // greater than any renderedAt this same test could have written on any
-    // *previous* run against this real, non-reset database (each run's
-    // Date.now() is later in wall-clock time than the last) and than
-    // anything a concurrently-running test could plausibly write - never a
-    // fixed literal, which collided across repeated runs during development
-    // of this test.
-    const renderedAt = new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000);
-    await markScreenshotReady(created.screenshot.id, {
-      storageProvider: "LOCAL_DISK",
-      storageKey: `screenshots/${created.screenshot.id}.png`,
-      mimeType: "image/png",
-      width: 1440,
-      height: 900,
-      renderedAt,
-    });
+    try {
+      // A modest 1-day-ahead offset from the moment this test actually runs
+      // is enough to strictly exceed any renderedAt already committed by a
+      // previous run or a concurrently-running test, without writing a
+      // permanent-future sentinel into a real, shared, non-reset database.
+      // A first version of this test used a 100-years-ahead date with no
+      // teardown; that row (real id, caught by review) permanently won
+      // every future "most recent screenshot" query and corrupted GET
+      // /health's `lastSuccessfulScreenshotAt` for actual local monitoring.
+      // The `finally` block below is what actually prevents that class of
+      // bug now - the offset alone is not a substitute for cleanup, since a
+      // deliberately-far-future value could still leak an id-less write.
+      const renderedAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      await markScreenshotReady(created.screenshot.id, {
+        storageProvider: "LOCAL_DISK",
+        storageKey: `screenshots/${created.screenshot.id}.png`,
+        mimeType: "image/png",
+        width: 1440,
+        height: 900,
+        renderedAt,
+      });
 
-    const result = await findMostRecentReadyScreenshot();
+      const result = await findMostRecentReadyScreenshot();
 
-    expect(result?.id).toBe(created.screenshot.id);
-    expect(result?.renderedAt?.toISOString()).toBe(renderedAt.toISOString());
+      expect(result?.id).toBe(created.screenshot.id);
+      expect(result?.renderedAt?.toISOString()).toBe(renderedAt.toISOString());
+    } finally {
+      // This row's blast radius if left behind is qualitatively worse than
+      // this file's other no-cleanup tests (a wrong "most recent screenshot"
+      // reading forever for a real operator checking GET /health, vs. an
+      // accumulating but otherwise harmless extra row) - clean it up
+      // unconditionally, including on assertion failure.
+      await prisma.tradeScreenshot.delete({ where: { id: created.screenshot.id } });
+    }
   });
 
   it("countRecentFailedScreenshots counts a FAILED row within the window and excludes one outside it", async () => {
