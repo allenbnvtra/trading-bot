@@ -9,6 +9,7 @@ import {
   SCREENSHOT_RENDER_HEIGHT,
   SCREENSHOT_RENDER_WIDTH,
   type ScreenshotGenerationJobPayload,
+  type ScreenshotType,
 } from "@trading-copilot/shared-types";
 import { tradeScreenshotsRepository } from "@trading-copilot/database";
 import { buildScreenshotStorageKey, type ScreenshotStorage } from "@trading-copilot/screenshot-storage";
@@ -67,14 +68,25 @@ export class ScreenshotGenerationProcessor extends WorkerHost implements OnModul
     try {
       await tradeScreenshotsRepository.markScreenshotGenerating(screenshotId);
 
-      const renderUrl = this.buildRenderUrl(job.name, screenshot);
-      const page = await this.browserManager.getPage();
+      const renderUrl = this.buildRenderUrl(job, screenshot);
+      const { page, context } = await this.browserManager.getPage();
 
       try {
         await page.setViewportSize({ width: SCREENSHOT_RENDER_WIDTH, height: SCREENSHOT_RENDER_HEIGHT });
 
         try {
           await page.goto(renderUrl, { waitUntil: "domcontentloaded" });
+        } catch (err) {
+          // Distinct from RENDER_TIMEOUT below: this is navigation itself
+          // failing (e.g. the dashboard is down, DNS/connection refused),
+          // not a render that started but never signaled ready. Keeping
+          // the real underlying error message rather than folding it into
+          // a generic timeout string is what makes the audit trail useful
+          // for diagnosing a real outage.
+          throw { failureCode: "NAVIGATION_FAILED", failureMessage: String(err) } satisfies ScreenshotFailure;
+        }
+
+        try {
           await page.waitForFunction(
             () =>
               document.body.dataset.renderState === "ready" ||
@@ -82,10 +94,10 @@ export class ScreenshotGenerationProcessor extends WorkerHost implements OnModul
             undefined,
             { timeout: RENDER_READY_TIMEOUT_MS },
           );
-        } catch {
+        } catch (err) {
           throw {
             failureCode: "RENDER_TIMEOUT",
-            failureMessage: `No render-ready signal within ${RENDER_READY_TIMEOUT_MS}ms`,
+            failureMessage: `No render-ready signal within ${RENDER_READY_TIMEOUT_MS}ms (${String(err)})`,
           } satisfies ScreenshotFailure;
         }
 
@@ -134,7 +146,10 @@ export class ScreenshotGenerationProcessor extends WorkerHost implements OnModul
           renderedAt: new Date(),
         });
       } finally {
-        await page.close();
+        // Closing the context also closes every page it owns (confirmed
+        // against the installed Playwright build) - closing only the page
+        // would leak the context for the life of the worker process.
+        await context.close();
       }
     } catch (err) {
       const { failureCode, failureMessage } = isScreenshotFailure(err)
@@ -146,17 +161,33 @@ export class ScreenshotGenerationProcessor extends WorkerHost implements OnModul
     }
   }
 
+  /**
+   * screenshot.type (freshly loaded from the DB row) is the authoritative
+   * source for which render route to open - job.name is only used to
+   * cross-check that the job actually matches the row it names. If they
+   * ever disagreed (a bug elsewhere, a malformed/misrouted job), building
+   * the URL from job.name alone could silently open
+   * "/internal/render/setup/null" or similar; asserting agreement and
+   * failing loudly here is safer than guessing which one is right.
+   */
   private buildRenderUrl(
-    jobName: string,
-    screenshot: { setupId: string | null; tradeId: string | null },
+    job: Job<ScreenshotGenerationJobPayload>,
+    screenshot: { setupId: string | null; tradeId: string | null; type: ScreenshotType },
   ): string {
-    if (jobName === GENERATE_PRE_TRADE_SCREENSHOT_JOB) {
+    const expectedJobName =
+      screenshot.type === "PRE_TRADE" ? GENERATE_PRE_TRADE_SCREENSHOT_JOB : GENERATE_POST_TRADE_SCREENSHOT_JOB;
+
+    if (job.name !== expectedJobName) {
+      throw {
+        failureCode: "JOB_TYPE_MISMATCH",
+        failureMessage: `Job "${job.name}" does not match TradeScreenshot type "${screenshot.type}" (expected job "${expectedJobName}")`,
+      } satisfies ScreenshotFailure;
+    }
+
+    if (screenshot.type === "PRE_TRADE") {
       return `${DASHBOARD_BASE_URL}/internal/render/setup/${screenshot.setupId}`;
     }
-    if (jobName === GENERATE_POST_TRADE_SCREENSHOT_JOB) {
-      return `${DASHBOARD_BASE_URL}/internal/render/trade/${screenshot.tradeId}`;
-    }
-    throw new Error(`Unknown screenshot job name: ${jobName}`);
+    return `${DASHBOARD_BASE_URL}/internal/render/trade/${screenshot.tradeId}`;
   }
 
   async onModuleDestroy(): Promise<void> {
