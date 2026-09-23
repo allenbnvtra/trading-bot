@@ -6,7 +6,7 @@ These assumptions are implemented in `packages/backtester/src/engine.ts`. If the
 
 ## Look-ahead bias prevention
 
-A strategy signal is evaluated using only `candles[0..i]` — it never sees candle `i+1` or later. `packages/strategy-engine`'s `evaluateEmaTrendPullback` is look-ahead-safe by construction: it is a pure function over a prefix of the candle array.
+A strategy signal is evaluated using only `candles[0..i]`: it never sees candle `i+1` or later. `packages/strategy-engine`'s `evaluateEmaTrendPullback` and `evaluateStrategyDefinition` (the DSL interpreter) are both look-ahead-safe by construction: each is a pure function over a prefix of the candle array.
 
 ## Entry timing
 
