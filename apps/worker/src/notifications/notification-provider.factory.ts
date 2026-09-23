@@ -1,6 +1,14 @@
+import { isTelegramConfigured } from "@trading-copilot/shared-types";
 import { ConsoleNotificationProvider } from "./console-notification.provider";
 import type { NotificationProvider } from "./notification-provider";
 import { TelegramNotificationProvider } from "./telegram-notification.provider";
+
+// Re-exported so every existing import of isTelegramConfigured from this
+// factory (apps/worker/scripts/notification-test.ts, this file's own
+// tests) keeps working unchanged - the single source of truth lives in
+// @trading-copilot/shared-types (also used directly by
+// apps/api/src/health/health.service.ts), not duplicated here.
+export { isTelegramConfigured };
 
 /**
  * NOTIFICATION_MODE=console (or unset, with no Telegram config) never
@@ -26,8 +34,4 @@ export function createNotificationProvider(env: NodeJS.ProcessEnv = process.env)
   }
 
   return new TelegramNotificationProvider({ botToken, chatId });
-}
-
-export function isTelegramConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.TELEGRAM_ENABLED === "true" && Boolean(env.TELEGRAM_BOT_TOKEN) && Boolean(env.TELEGRAM_CHAT_ID);
 }
