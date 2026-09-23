@@ -773,6 +773,90 @@ export function getSetupScreenshots(setupId: string): Promise<TradeScreenshot[]>
   return apiFetch<TradeScreenshot[]>(`/setups/${setupId}/screenshots`);
 }
 
+// --- Milestone 6: notifications + manual trade workflow ------------------
+//
+// Mirrors packages/shared-types/src/notifications.ts's NOTIFICATION_TYPES /
+// SKIP_REASONS enums and executeSetupSchema/skipSetupSchema by hand, same
+// as every other type in this file - this module never takes a workspace
+// dependency on @trading-copilot/shared-types (see ScreenshotType's note
+// above for why).
+
+export type NotificationType =
+  | "SETUP_PREPARE"
+  | "SETUP_READY"
+  | "SETUP_INVALIDATED"
+  | "SETUP_EXPIRED"
+  | "SETUP_REJECTED";
+
+export type NotificationProviderType = "TELEGRAM" | "CONSOLE";
+
+export type NotificationDeliveryStatus = "QUEUED" | "SENDING" | "SENT" | "FAILED" | "RETRYING";
+
+/**
+ * A dashboard-relevant subset of packages/trading-domain's
+ * NotificationDelivery - only the fields the Setup detail page's
+ * "Notifications" status block actually renders, same convention as
+ * MarketSnapshot above.
+ */
+export interface NotificationDelivery {
+  id: string;
+  notificationType: NotificationType;
+  provider: NotificationProviderType;
+  status: NotificationDeliveryStatus;
+  attemptCount: number;
+  sentAt: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+}
+
+export function getSetupNotifications(setupId: string): Promise<NotificationDelivery[]> {
+  return apiFetch<NotificationDelivery[]>(`/setups/${setupId}/notifications`);
+}
+
+/** Mirrors SKIP_REASONS in packages/shared-types/src/enums.ts exactly. */
+export const SKIP_REASONS = [
+  "MISSED_ALERT",
+  "PRICE_MOVED",
+  "MANUAL_DISAGREEMENT",
+  "RISK_TOO_HIGH",
+  "BUSY",
+  "SETUP_NO_LONGER_VALID",
+  "OTHER",
+] as const;
+export type SkipReason = (typeof SKIP_REASONS)[number];
+
+/**
+ * The dashboard's single-action "record what I actually did" call, backing
+ * the PAPER TRADE / I ENTERED THIS TRADE buttons on the Setup detail page.
+ * Mirrors executeSetupSchema in packages/shared-types/src/notifications.ts -
+ * executionMode is deliberately restricted to PAPER|MANUAL_LIVE, never the
+ * full ExecutionMode union (BACKTEST/SKIPPED go through other paths).
+ */
+export interface ExecuteSetupInput {
+  executionMode: "PAPER" | "MANUAL_LIVE";
+  actualEntry: string;
+  quantity: number;
+  entryTimestamp: string;
+  actualFees?: string;
+  actualSlippage?: string;
+  notes?: string;
+}
+
+export function executeSetup(setupId: string, input: ExecuteSetupInput): Promise<JournalTrade> {
+  return apiFetch<JournalTrade>(`/setups/${setupId}/execute`, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Backs the SKIP TRADE button. Mirrors skipSetupSchema - reason is optional. */
+export function skipSetup(setupId: string, reason?: SkipReason): Promise<JournalTrade> {
+  return apiFetch<JournalTrade>(`/setups/${setupId}/skip`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
+}
+
 /**
  * Idempotent-safe manual/admin trigger (docs/screenshot-design.md): a FAILED
  * row is reset to REQUESTED and re-enqueued, a READY row is returned

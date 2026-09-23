@@ -109,6 +109,11 @@ export class SetupController {
     return this.screenshotService.listForSetup(id);
   }
 
+  @Get(":id/notifications")
+  listNotifications(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.setupService.listNotifications(id);
+  }
+
   /**
    * Manual/admin trigger - idempotent, returns the existing row if a
    * PRE_TRADE screenshot has already been requested or generated for this

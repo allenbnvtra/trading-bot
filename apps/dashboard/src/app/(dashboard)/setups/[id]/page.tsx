@@ -4,18 +4,22 @@ import {
   ApiError,
   getMarketSnapshot,
   getSetup,
+  getSetupNotifications,
   getSetupScreenshots,
   getSetupTimeline,
   getWebhookEventTimeline,
   getWebhookEvents,
   type JournalEvent,
   type MarketSnapshot,
+  type NotificationDelivery,
   type TradeScreenshot,
 } from "@/lib/api";
 import { formatDateTime, formatDecimal } from "@/lib/format";
 import { DirectionBadge, SetupSourceBadge, SetupStatusBadge } from "@/components/StatusBadge";
 import EventTimeline from "@/components/EventTimeline";
 import { ScreenshotsSection } from "@/components/ScreenshotCard";
+import NotificationsCard from "@/components/NotificationsCard";
+import SetupActionsCard from "@/components/SetupActionsCard";
 
 /** Renders a nullable planned price. Never "$0" or a blank cell - null means genuinely unknown, not zero. */
 function plannedPriceValue(value: string | null): string {
@@ -90,6 +94,35 @@ export default async function SetupDetailPage({ params }: { params: Promise<{ id
       : await getSetupTimeline(id);
   } catch (err) {
     timelineError = err instanceof ApiError ? err.message : "Failed to load setup timeline.";
+  }
+
+  // Whether a trade decision (executed or skipped) has already been
+  // recorded against this Setup, derived from the timeline already fetched
+  // above rather than a new list-by-setupId endpoint - see
+  // journal-trades.ts's createJournalTrade/createAndRecordJournalTradeEntry,
+  // both of which emit a TRADE_EXECUTED/TRADE_SKIPPED JournalEvent
+  // correlated on the Setup's id with entityId set to the JournalTrade's
+  // own id. Used only to decide which UI to show; the actual "already
+  // executed" guard is enforced server-side (setup.service.ts#execute's
+  // 409), this is purely a presentation shortcut.
+  const recordedTradeIds = Array.from(
+    new Set(
+      timeline
+        .filter(
+          (event) =>
+            (event.eventType === "TRADE_EXECUTED" || event.eventType === "TRADE_SKIPPED") &&
+            event.entityType === "JOURNAL_TRADE",
+        )
+        .map((event) => event.entityId),
+    ),
+  );
+
+  // Best-effort, same as screenshots/webhookEventId above.
+  let notifications: NotificationDelivery[] = [];
+  try {
+    notifications = await getSetupNotifications(id);
+  } catch {
+    // Rendered as "no notifications" below - never fabricated.
   }
 
   return (
@@ -193,6 +226,41 @@ export default async function SetupDetailPage({ params }: { params: Promise<{ id
       </div>
 
       <ScreenshotsSection owner={{ kind: "setup", setupId: id }} initialScreenshots={screenshots} />
+
+      {setup.status === "READY" && recordedTradeIds.length === 0 && (
+        <SetupActionsCard setupId={id} />
+      )}
+
+      {recordedTradeIds.length > 0 && (
+        <div className="card">
+          <h2>Trade Actions</h2>
+          <p className="muted">
+            {recordedTradeIds.length === 1
+              ? "This setup already has a recorded trade decision: "
+              : "This setup already has recorded trade decisions: "}
+            {recordedTradeIds.map((tradeId, index) => (
+              <span key={tradeId}>
+                {index > 0 && ", "}
+                <Link href={`/trades/${tradeId}`}>{tradeId}</Link>
+              </span>
+            ))}
+          </p>
+        </div>
+      )}
+
+      {setup.status !== "READY" && recordedTradeIds.length === 0 && (
+        <div className="card">
+          <h2>Trade Actions</h2>
+          <div className="empty-state">
+            Actions become available once this setup reaches READY.
+          </div>
+        </div>
+      )}
+
+      <div className="card">
+        <h2>Notifications</h2>
+        <NotificationsCard notifications={notifications} />
+      </div>
 
       <div className="card">
         <h2>Timeline</h2>

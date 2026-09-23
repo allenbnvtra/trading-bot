@@ -15,7 +15,13 @@ import type {
   SkipSetupInput,
   UpdateSetupStatusInput,
 } from "@trading-copilot/shared-types";
-import type { JournalEvent, JournalTrade, RiskCalculation, Setup } from "@trading-copilot/trading-domain";
+import type {
+  JournalEvent,
+  JournalTrade,
+  NotificationDelivery,
+  RiskCalculation,
+  Setup,
+} from "@trading-copilot/trading-domain";
 import { NotificationService } from "../notifications/notification.service";
 import { ScreenshotService } from "../screenshots/screenshot.service";
 
@@ -166,6 +172,16 @@ export class SetupService {
       throw new NotFoundException(`No risk calculation exists for setup ${id}`);
     }
     return calculation;
+  }
+
+  /**
+   * Mirrors listRiskCalculations above exactly: a thin passthrough to the
+   * repository, no existence check on the setup id first (a nonexistent
+   * setup simply returns an empty array, same as listRiskCalculations does).
+   * The dashboard's Setup detail page (Task 12) is the only caller.
+   */
+  listNotifications(id: string): Promise<NotificationDelivery[]> {
+    return notificationDeliveriesRepository.listNotificationsForSetup(id);
   }
 
   /**

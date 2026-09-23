@@ -5,6 +5,7 @@ import type {
   JournalEventType,
   JournalTradeStatus,
   NormalizedTradeSource,
+  NotificationDeliveryStatus,
   ScreenshotStatus,
   SetupSource,
   SetupStatus,
@@ -136,6 +137,18 @@ const SCREENSHOT_STATUS_CLASS: Record<ScreenshotStatus, string> = {
 
 export function ScreenshotStatusBadge({ status }: { status: ScreenshotStatus }) {
   return <span className={`badge ${SCREENSHOT_STATUS_CLASS[status]}`}>{status}</span>;
+}
+
+const NOTIFICATION_DELIVERY_STATUS_CLASS: Record<NotificationDeliveryStatus, string> = {
+  QUEUED: "badge--queued",
+  SENDING: "badge--running",
+  SENT: "badge--success",
+  FAILED: "badge--danger",
+  RETRYING: "badge--warning",
+};
+
+export function NotificationDeliveryStatusBadge({ status }: { status: NotificationDeliveryStatus }) {
+  return <span className={`badge ${NOTIFICATION_DELIVERY_STATUS_CLASS[status]}`}>{status}</span>;
 }
 
 export const EVENT_TYPE_LABELS: Record<JournalEventType, string> = {
