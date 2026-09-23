@@ -140,8 +140,8 @@ ALTER TABLE "ResearchExperiment" ADD CONSTRAINT "ResearchExperiment_hypothesisId
 ALTER TABLE "ResearchExperiment" ADD CONSTRAINT "ResearchExperiment_backtestId_fkey" FOREIGN KEY ("backtestId") REFERENCES "Backtest"("id") ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- Final-test reuse safeguard: at most one non-FAILED FINAL_TEST experiment
--- per hypothesis. See ResearchExperiment's doc comment in schema.prisma —
--- do not replace this with a plain unique constraint.
+-- per hypothesis. See ResearchExperiment's doc comment in schema.prisma.
+-- Do not replace this with a plain unique constraint.
 CREATE UNIQUE INDEX "ResearchExperiment_hypothesis_final_test_key"
   ON "ResearchExperiment" ("hypothesisId")
   WHERE "datasetRole" = 'FINAL_TEST' AND "status" IN ('QUEUED', 'RUNNING', 'COMPLETED');

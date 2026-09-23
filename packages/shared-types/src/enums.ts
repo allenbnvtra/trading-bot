@@ -200,7 +200,7 @@ export const JOURNAL_EVENT_TYPES = [
   "NOTIFICATION_SENT",
   "NOTIFICATION_RETRYING",
   "NOTIFICATION_FAILED",
-  // Milestone 7 — AI research agent + experiment framework. See
+  // Milestone 7: AI research agent + experiment framework. See
   // docs/ai-research.md.
   "AGENT_STARTED",
   "AGENT_COMPLETED",

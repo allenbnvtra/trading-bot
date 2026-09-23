@@ -36,7 +36,7 @@ enum StrategyVersionStatus {
 }
 
 // Milestone 7. Confidence the ResearchAgent itself expressed for a
-// hypothesis — an AI self-report, not a statistical measure. Never used as
+// hypothesis (an AI self-report, not a statistical measure). Never used as
 // an input to any deterministic calculation; display/filter only.
 enum HypothesisConfidence {
   LOW
@@ -61,10 +61,10 @@ enum ResearchExperimentStatus {
 }
 
 // See docs/research-methodology.md "The pipeline". Stages advance in this
-// order and only after the prior stage has a COMPLETED experiment — enforced
+// order and only after the prior stage has a COMPLETED experiment, enforced
 // in apps/api/src/research/research.service.ts, not at the database layer
 // (the database layer only enforces the final-test reuse rule below, via a
-// partial unique index — see ResearchExperiment's own doc comment).
+// partial unique index; see ResearchExperiment's own doc comment).
 enum ResearchDatasetRole {
   RESEARCH
   VALIDATION
@@ -73,7 +73,7 @@ enum ResearchDatasetRole {
 }
 
 // Reserved for future runtime agents (StructureAgent, RegimeAgent,
-// CriticAgent, EventAgent — see docs/roadmap.md). Milestone 7 only ever
+// CriticAgent, EventAgent; see docs/roadmap.md). Milestone 7 only ever
 // creates RESEARCH rows; do not pre-add the others until those agents
 // actually exist, matching the JournalEventType convention below.
 enum AgentType {
@@ -194,7 +194,7 @@ model StrategyVersion {
   // Milestone 7. Set only when this version originated from an AI-proposed
   // hypothesis (see ResearchHypothesis.proposedStrategyDefinition). Null
   // for every hand-authored version, including the Milestone 1 example
-  // strategy. A version with this set is never edited in place — the
+  // strategy. A version with this set is never edited in place: the
   // existing "StrategyVersion rows are immutable" rule is unchanged.
   sourceHypothesisId String?
   sourceHypothesis   ResearchHypothesis? @relation(fields: [sourceHypothesisId], references: [id])
@@ -237,7 +237,7 @@ model Backtest {
   metrics BacktestMetrics?
 
   // Milestone 7. Set only when this Backtest was run as part of a
-  // ResearchExperiment's dataset-stage attempt — see ResearchExperiment's
+  // ResearchExperiment's dataset-stage attempt; see ResearchExperiment's
   // doc comment. Null for every ordinary hand-triggered backtest.
   researchExperiment ResearchExperiment?
 }
@@ -319,19 +319,19 @@ model BacktestMetrics {
 }
 
 // ---------------------------------------------------------------------------
-// Milestone 7 — AI research agent + experiment framework (see
+// Milestone 7: AI research agent + experiment framework (see
 // docs/ai-research.md, docs/research-methodology.md). The existing
 // Backtest/BacktestTrade/BacktestMetrics pipeline is reused entirely and
 // never duplicated.
 // ---------------------------------------------------------------------------
 
 // Milestone 7. One row per AI provider call. Written RUNNING before the
-// call, then SUCCEEDED/FAILED after — so a crash mid-call still leaves an
+// call, then SUCCEEDED/FAILED after, so a crash mid-call still leaves an
 // audit row, never a silently-missing one. outputRaw preserves the exact
 // provider response text even when outputParsed/schema validation failed,
 // so a FAILED row is still inspectable, never a wasted call with no trace.
 // No delete/update-in-place function is exposed beyond the documented
-// status transitions — see repositories/research.ts.
+// status transitions; see repositories/research.ts.
 model AgentExecution {
   id String @id @default(uuid())
 
@@ -341,7 +341,7 @@ model AgentExecution {
   promptVersion String
 
   // Deterministic ResearchDataSummary (or subset) the prompt was built
-  // from — persisted so a human can see exactly what data the AI saw,
+  // from, persisted so a human can see exactly what data the AI saw,
   // without re-deriving it later from possibly-changed journal data.
   inputSummary Json
 
@@ -365,7 +365,7 @@ model AgentExecution {
 }
 
 // Milestone 7. A structured, schema-validated output of a SUCCEEDED
-// AgentExecution. agentExecutionId is @unique — a hypothesis always traces
+// AgentExecution. agentExecutionId is @unique: a hypothesis always traces
 // to exactly one originating call, never fabricated without one.
 model ResearchHypothesis {
   id               String         @id @default(uuid())
@@ -380,12 +380,12 @@ model ResearchHypothesis {
 
   // The ResearchDataSummary this hypothesis was derived from (duplicated
   // from AgentExecution.inputSummary for convenient querying without a
-  // join — both are append-only so there is no drift risk).
+  // join; both are append-only so there is no drift risk).
   sourceDataSummary Json
 
   // A schema-validated StrategyDefinition JSON document (see
   // packages/strategy-engine/src/strategies/strategy-definition.ts). Not a
-  // StrategyVersion yet — that is only created once a human requests a
+  // StrategyVersion yet: that is only created once a human requests a
   // RESEARCH-stage experiment (see ResearchService.createExperiment).
   proposedStrategyDefinition Json
 
@@ -400,7 +400,7 @@ model ResearchHypothesis {
 }
 
 // Milestone 7. One row per dataset-stage attempt at testing a hypothesis's
-// proposed strategy. backtestId links to a normal Backtest row — the
+// proposed strategy. backtestId links to a normal Backtest row: the
 // existing, unmodified backtest pipeline is reused entirely; this model
 // never duplicates backtest logic.
 //
@@ -408,7 +408,7 @@ model ResearchHypothesis {
 // dataset is not renewable"): at most one non-FAILED FINAL_TEST experiment
 // may exist per hypothesis. Prisma's schema DSL cannot express a partial
 // (WHERE-clause) unique index, so this is a hand-written migration.sql
-// (see the migration created in this task) — DO NOT "clean this up" into a
+// (see the migration created in this task). DO NOT "clean this up" into a
 // plain @@unique([hypothesisId, datasetRole]), which would also forbid two
 // FAILED attempts or a RESEARCH+VALIDATION pair, both legitimate.
 model ResearchExperiment {
@@ -512,7 +512,7 @@ enum LossCategory {
 
 // Milestone 2/3/5/6/7 additive taxonomy. AGENT_STARTED/COMPLETED/FAILED and
 // the RESEARCH_/STRATEGY_VERSION_STATUS_CHANGED values (Milestone 7) are
-// emitted by apps/api's research service, not by this package — see
+// emitted by apps/api's research service, not by this package. See
 // docs/ai-research.md. STRATEGY_VERSION_APPROVED/STRATEGY_PAUSED etc. are
 // still not added; those remain reserved for a future milestone that
 // actually needs them.
@@ -552,7 +552,7 @@ enum JournalEventType {
   NOTIFICATION_SENT
   NOTIFICATION_RETRYING
   NOTIFICATION_FAILED
-  // Milestone 7 — AI research agent + experiment framework. See
+  // Milestone 7: AI research agent + experiment framework. See
   // docs/ai-research.md.
   AGENT_STARTED
   AGENT_COMPLETED

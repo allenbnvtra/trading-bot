@@ -1,7 +1,7 @@
 import Decimal from "decimal.js";
 
 /**
- * Milestone 7 — AI research agent + experiment framework (see
+ * Milestone 7: AI research agent + experiment framework (see
  * docs/ai-research.md, docs/research-methodology.md). Plain domain entities,
  * decoupled from Prisma's generated types, matching the convention in
  * entities.ts.

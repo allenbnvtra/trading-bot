@@ -15,7 +15,7 @@ import type { Direction } from "@trading-copilot/shared-types";
  * packages/trading-domain/src/journal-entities.ts.
  *
  * AgentExecution (plus the new ResearchHypothesis/ResearchExperiment) was
- * promoted out of this file in Milestone 7 — it is now a real, persisted
+ * promoted out of this file in Milestone 7: it is now a real, persisted
  * entity in packages/trading-domain/src/research-entities.ts, scoped to the
  * RESEARCH agent type only (see AgentType there). This placeholder's
  * broader setup/trade-linked runtime-agent shape remains unimplemented and
