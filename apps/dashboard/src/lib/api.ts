@@ -231,6 +231,8 @@ export type SetupSource = "BACKTEST" | "MANUAL_TEST" | "SYSTEM" | "TRADINGVIEW";
 export type ExecutionMode = "BACKTEST" | "PAPER" | "MANUAL_LIVE" | "SKIPPED";
 export type JournalTradeStatus = "PLANNED" | "OPEN" | "CLOSED" | "SKIPPED";
 export type NormalizedTradeSource = "BACKTEST" | "JOURNAL";
+/** Mirrors POST_TRADE_OUTCOMES in packages/shared-types/src/enums.ts exactly. */
+export type PostTradeOutcome = "WIN" | "LOSS" | "BREAKEVEN";
 
 export interface JournalEvent {
   id: string;
@@ -376,6 +378,12 @@ export interface JournalTrade {
   status: JournalTradeStatus;
   entryNotes: string | null;
   exitNotes: string | null;
+  /**
+   * Computed server-side once, at close time, from the sign of netPnl -
+   * never fabricated or re-derived here. Null until the trade is CLOSED.
+   * See computeJournalTradeClose in packages/database's journal-trades.ts.
+   */
+  outcome: PostTradeOutcome | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -854,6 +862,30 @@ export function skipSetup(setupId: string, reason?: SkipReason): Promise<Journal
   return apiFetch<JournalTrade>(`/setups/${setupId}/skip`, {
     method: "POST",
     body: JSON.stringify({ reason }),
+  });
+}
+
+/**
+ * Backs the CLOSE TRADE form on the journal trade detail page. Mirrors
+ * closeJournalTradeSchema in packages/shared-types/src/journal.ts exactly -
+ * no `mfe`/`mae` fields here, those are computed server-side from real
+ * candle data (see computeJournalTradeClose / journal-trades.ts's close
+ * flow) and never client-supplied. The returned JournalTrade carries every
+ * server-computed field (grossPnl, netPnl, rMultiple, outcome, mfe, mae) -
+ * this function never recomputes any of them.
+ */
+export interface CloseJournalTradeInput {
+  actualExit: string;
+  exitTimestamp: string;
+  actualFees?: string;
+  actualSlippage?: string;
+  exitNotes?: string;
+}
+
+export function closeJournalTrade(id: string, input: CloseJournalTradeInput): Promise<JournalTrade> {
+  return apiFetch<JournalTrade>(`/journal/trades/${id}/close`, {
+    method: "POST",
+    body: JSON.stringify(input),
   });
 }
 

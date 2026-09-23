@@ -9,9 +9,17 @@ import {
   type TradeScreenshot,
 } from "@/lib/api";
 import { formatCurrency, formatDateTime, formatDecimal, formatR, signOf } from "@/lib/format";
-import { DirectionBadge, ExecutionModeBadge, JournalTradeStatusBadge } from "@/components/StatusBadge";
+import {
+  DirectionBadge,
+  ExecutionModeBadge,
+  JournalTradeStatusBadge,
+  OutcomeBadge,
+} from "@/components/StatusBadge";
 import EventTimeline from "@/components/EventTimeline";
 import { ScreenshotsSection } from "@/components/ScreenshotCard";
+import CloseTradeCard from "@/components/CloseTradeCard";
+
+const NOT_ENOUGH_CANDLE_DATA = "Not enough candle data";
 
 export default async function JournalTradeDetailPage({
   params,
@@ -102,6 +110,12 @@ export default async function JournalTradeDetailPage({
             </div>
           </div>
           <div className="detail-item">
+            <div className="detail-item__label">Outcome</div>
+            <div className="detail-item__value">
+              {trade.outcome ? <OutcomeBadge outcome={trade.outcome} /> : "N/A"}
+            </div>
+          </div>
+          <div className="detail-item">
             <div className="detail-item__label">Planned Entry</div>
             <div className="detail-item__value">{formatDecimal(trade.plannedEntry, 4)}</div>
           </div>
@@ -175,11 +189,23 @@ export default async function JournalTradeDetailPage({
           </div>
           <div className="detail-item">
             <div className="detail-item__label">MFE</div>
-            <div className="detail-item__value">{formatCurrency(trade.mfe)}</div>
+            <div className="detail-item__value">
+              {trade.mfe !== null
+                ? formatCurrency(trade.mfe)
+                : trade.status === "CLOSED"
+                  ? NOT_ENOUGH_CANDLE_DATA
+                  : "N/A"}
+            </div>
           </div>
           <div className="detail-item">
             <div className="detail-item__label">MAE</div>
-            <div className="detail-item__value">{formatCurrency(trade.mae)}</div>
+            <div className="detail-item__value">
+              {trade.mae !== null
+                ? formatCurrency(trade.mae)
+                : trade.status === "CLOSED"
+                  ? NOT_ENOUGH_CANDLE_DATA
+                  : "N/A"}
+            </div>
           </div>
         </div>
 
@@ -200,6 +226,8 @@ export default async function JournalTradeDetailPage({
           </div>
         )}
       </div>
+
+      {trade.status === "OPEN" && <CloseTradeCard tradeId={id} />}
 
       <ScreenshotsSection owner={{ kind: "trade", tradeId: id }} initialScreenshots={screenshots} />
 

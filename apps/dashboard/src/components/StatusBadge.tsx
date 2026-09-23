@@ -6,6 +6,7 @@ import type {
   JournalTradeStatus,
   NormalizedTradeSource,
   NotificationDeliveryStatus,
+  PostTradeOutcome,
   ScreenshotStatus,
   SetupSource,
   SetupStatus,
@@ -91,6 +92,17 @@ const EXECUTION_MODE_CLASS: Record<ExecutionMode, string> = {
 
 export function ExecutionModeBadge({ mode }: { mode: ExecutionMode }) {
   return <span className={`badge ${EXECUTION_MODE_CLASS[mode]}`}>{mode}</span>;
+}
+
+const OUTCOME_CLASS: Record<PostTradeOutcome, string> = {
+  WIN: "badge--success",
+  LOSS: "badge--danger",
+  BREAKEVEN: "badge--neutral",
+};
+
+/** Null (not yet CLOSED) is a caller concern - render nothing/"N/A" at the call site, never a fabricated outcome here. */
+export function OutcomeBadge({ outcome }: { outcome: PostTradeOutcome }) {
+  return <span className={`badge ${OUTCOME_CLASS[outcome]}`}>{outcome}</span>;
 }
 
 const TRADE_SOURCE_CLASS: Record<NormalizedTradeSource, string> = {

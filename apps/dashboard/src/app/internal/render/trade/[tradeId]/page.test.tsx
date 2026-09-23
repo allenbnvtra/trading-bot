@@ -82,6 +82,7 @@ function buildJournalTrade(overrides: Partial<JournalTrade> = {}): JournalTrade 
     mae: "-20",
     executionMode: "PAPER",
     status: "CLOSED",
+    outcome: "WIN",
     entryNotes: null,
     exitNotes: null,
     createdAt: "2026-03-12T14:00:05.000Z",
