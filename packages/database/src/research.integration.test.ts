@@ -52,7 +52,13 @@ describe.skipIf(!process.env.DATABASE_URL)("researchRepository (live Postgres)",
     });
     expect(created.status).toBe("RUNNING");
 
+    // The creation-time provider/model/promptVersion is only the API
+    // process's guess; the values from the provider that actually ran
+    // overwrite it on completion.
     const succeeded = await researchRepository.markAgentExecutionSucceeded(created.id, {
+      provider: "ANTHROPIC",
+      model: "claude-sonnet-5-20260901",
+      promptVersion: "1.0.1",
       outputRaw: '{"title":"x"}',
       outputParsed: { title: "x" },
       tokensInput: 100,
@@ -61,6 +67,42 @@ describe.skipIf(!process.env.DATABASE_URL)("researchRepository (live Postgres)",
     });
     expect(succeeded.status).toBe("SUCCEEDED");
     expect(succeeded.outputParsed).toEqual({ title: "x" });
+    expect(succeeded.provider).toBe("ANTHROPIC");
+    expect(succeeded.model).toBe("claude-sonnet-5-20260901");
+    expect(succeeded.promptVersion).toBe("1.0.1");
+  });
+
+  it("marks an AgentExecution FAILED preserving the raw response, usage, cost, and real model of a billed response", async () => {
+    const before = await researchRepository.getTodayResearchSpend();
+    const created = await researchRepository.createAgentExecution({
+      agentType: "RESEARCH",
+      provider: "MOCK",
+      model: "mock-v1",
+      promptVersion: "1.0.0",
+      inputSummary: {},
+    });
+
+    const failed = await researchRepository.markAgentExecutionFailed(created.id, {
+      outputRaw: '[{"type":"text","text":"no tool call"}]',
+      errorMessage: "response contained no tool_use block",
+      tokensInput: 40,
+      tokensOutput: 60,
+      costUsd: new Decimal("0.0012"),
+      provider: "ANTHROPIC",
+      model: "claude-sonnet-5-20260901",
+      promptVersion: "1.0.0",
+    });
+    expect(failed.status).toBe("FAILED");
+    expect(failed.outputRaw).toBe('[{"type":"text","text":"no tool call"}]');
+    expect(failed.tokensInput).toBe(40);
+    expect(failed.tokensOutput).toBe(60);
+    expect(failed.costUsd?.toString()).toBe("0.0012");
+    expect(failed.provider).toBe("ANTHROPIC");
+    expect(failed.model).toBe("claude-sonnet-5-20260901");
+
+    // A failed-but-billed call counts toward today's budget.
+    const after = await researchRepository.getTodayResearchSpend();
+    expect(after.tokensUsed - before.tokensUsed).toBeGreaterThanOrEqual(100);
   });
 
   it("marks an AgentExecution FAILED with an error message", async () => {
@@ -78,6 +120,11 @@ describe.skipIf(!process.env.DATABASE_URL)("researchRepository (live Postgres)",
     });
     expect(failed.status).toBe("FAILED");
     expect(failed.errorMessage).toBe("provider timeout");
+    // No response existed, so the creation-time audit fields are untouched
+    // and usage stays null.
+    expect(failed.provider).toBe("MOCK");
+    expect(failed.model).toBe("mock-v1");
+    expect(failed.tokensInput).toBeNull();
 
     const fetched = await researchRepository.getAgentExecution(created.id);
     expect(fetched?.status).toBe("FAILED");
@@ -95,6 +142,9 @@ describe.skipIf(!process.env.DATABASE_URL)("researchRepository (live Postgres)",
       inputSummary: {},
     });
     await researchRepository.markAgentExecutionSucceeded(execution.id, {
+      provider: "MOCK",
+      model: "mock-v1",
+      promptVersion: "1.0.0",
       outputRaw: "{}",
       outputParsed: {},
       tokensInput: 1,
@@ -133,6 +183,9 @@ describe.skipIf(!process.env.DATABASE_URL)("researchRepository (live Postgres)",
       inputSummary: {},
     });
     await researchRepository.markAgentExecutionSucceeded(execution.id, {
+      provider: "MOCK",
+      model: "mock-v1",
+      promptVersion: "1.0.0",
       outputRaw: "{}",
       outputParsed: {},
       tokensInput: 1,
@@ -342,6 +395,9 @@ describe.skipIf(!process.env.DATABASE_URL)("researchRepository (live Postgres)",
       inputSummary: {},
     });
     await researchRepository.markAgentExecutionSucceeded(execution.id, {
+      provider: "MOCK",
+      model: "mock-v1",
+      promptVersion: "1.0.0",
       outputRaw: "{}",
       outputParsed: {},
       tokensInput: 50,

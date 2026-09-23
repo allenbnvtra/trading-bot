@@ -1,6 +1,8 @@
 import { InjectQueue } from "@nestjs/bullmq";
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import type { Queue } from "bullmq";
+import { z } from "zod";
+import { AI_PROVIDER_PROMPT_VERSION } from "@trading-copilot/ai-provider";
 import {
   instrumentsRepository,
   researchRepository,
@@ -22,10 +24,30 @@ import { BACKTEST_RUN_JOB, BACKTEST_RUN_QUEUE, type BacktestRunJobPayload } from
 /** Container Strategy key every AI-proposed StrategyDefinition is versioned under. See docs/ai-research.md. */
 const AI_GENERATED_STRATEGY_KEY = "ai-generated-dsl-v1";
 
-/** Configurable via env; a conservative default keeps an unattended loop from running up real API cost. */
-function getDailyTokenBudget(): number {
-  const raw = process.env.RESEARCH_DAILY_TOKEN_BUDGET;
-  return raw ? Number.parseInt(raw, 10) : 200_000;
+/** A conservative default keeps an unattended loop from running up real API cost. */
+const DEFAULT_DAILY_TOKEN_BUDGET = 200_000;
+
+const dailyTokenBudgetSchema = z.coerce.number().int().positive();
+
+/**
+ * Configurable via RESEARCH_DAILY_TOKEN_BUDGET; unset (or empty) uses
+ * DEFAULT_DAILY_TOKEN_BUDGET. A set-but-malformed value FAILS CLOSED: it
+ * throws rather than parsing to NaN, because `tokensUsed >= NaN` is always
+ * false and would silently disable the budget (unlimited spend). Zod's
+ * coerce also rejects partial numbers like "5000abc", which parseInt would
+ * have quietly accepted as 5000.
+ */
+export function getDailyTokenBudget(raw: string | undefined = process.env.RESEARCH_DAILY_TOKEN_BUDGET): number {
+  if (raw === undefined || raw.trim() === "") {
+    return DEFAULT_DAILY_TOKEN_BUDGET;
+  }
+  const parsed = dailyTokenBudgetSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw new Error(
+      `RESEARCH_DAILY_TOKEN_BUDGET must be a positive integer, got ${JSON.stringify(raw)}; refusing to run research with an unenforceable budget`,
+    );
+  }
+  return parsed.data;
 }
 
 /**
@@ -71,12 +93,19 @@ export class ResearchService {
     });
     const summary = buildResearchDataSummary(trades);
 
+    // The provider/model/promptVersion recorded here are only this API
+    // process's REQUESTED values: the row is created synchronously so an
+    // audit trail exists even if the job never runs, but the real decision
+    // is made by the worker process's own env (createAIProviderFromEnv),
+    // which may differ. AgentExecutionProcessor overwrites all three with
+    // the values from the provider that actually ran once a response
+    // exists (see markAgentExecutionSucceeded/markAgentExecutionFailed).
     const provider = process.env.ANTHROPIC_API_KEY ? "ANTHROPIC" : "MOCK";
     const execution = await researchRepository.createAgentExecution({
       agentType: "RESEARCH",
       provider,
-      model: provider === "ANTHROPIC" ? "claude-sonnet-5" : "mock-v1",
-      promptVersion: "1.0.0",
+      model: provider === "ANTHROPIC" ? (process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5") : "mock-v1",
+      promptVersion: AI_PROVIDER_PROMPT_VERSION,
       inputSummary: summary as unknown as Record<string, unknown>,
     });
 
@@ -296,7 +325,7 @@ export class ResearchService {
     // with the earlier exploratory/training-stage window. Including
     // RESEARCH/VALIDATION would let a hypothesis borrow trade volume/date
     // span from its own training period to satisfy a guardrail meant to
-    // gate the evaluation stage, making it easier (not harder) to pass — the
+    // gate the evaluation stage, making it easier (not harder) to pass, the
     // wrong direction for a safety gate. `hasCompletedFinalTest`/
     // `hasCompletedWalkForward` above already guarantee at least one
     // qualifying experiment of each role exists. Reuses the same unscoped,

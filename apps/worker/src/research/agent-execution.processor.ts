@@ -1,7 +1,12 @@
 import { Processor, WorkerHost } from "@nestjs/bullmq";
 import { Inject, Injectable, type Provider } from "@nestjs/common";
 import type { Job } from "bullmq";
-import type { AIProvider } from "@trading-copilot/ai-provider";
+import {
+  AIProviderResponseError,
+  type AIProvider,
+  type AIProviderResult,
+  type ResearchHypothesisOutput,
+} from "@trading-copilot/ai-provider";
 import { journalEventsRepository, researchRepository } from "@trading-copilot/database";
 import { RESEARCH_AGENT_QUEUE, type ResearchAgentJobPayload } from "@trading-copilot/shared-types";
 import { ResearchAgent } from "./research-agent";
@@ -65,20 +70,24 @@ export class AgentExecutionProcessor extends WorkerHost {
       throw new Error(`AgentExecution ${agentExecutionId} not found: it must be created before enqueueing`);
     }
 
+    // Held outside the try so the catch block can still audit a billed,
+    // successful provider call whose downstream persistence failed.
+    let result: AIProviderResult<ResearchHypothesisOutput> | undefined;
+
     try {
       await journalEventsRepository.createJournalEvent({
         eventType: "AGENT_STARTED",
         entityType: "AGENT_EXECUTION",
         entityId: agentExecutionId,
-        metadata: { provider: execution.provider },
+        metadata: { provider: this.aiProvider.type },
       });
 
       const agent = new ResearchAgent(this.aiProvider);
-      // execution.inputSummary is Record<string, unknown> (a Json column
-      // round-tripped through Prisma) with no compile-time proof it matches
-      // ResearchDataSummary; this is the one place raw JSON re-enters typed
-      // code after that round trip.
-      const result = await agent.generateHypothesis(execution.inputSummary as never);
+      // execution.inputSummary is a Json column round-tripped through
+      // Prisma: plain JSON with no compile-time proof it is a
+      // ResearchDataSummary, which is exactly what ResearchAgent's
+      // JsonSafeResearchSummary parameter type accepts (no cast needed).
+      result = await agent.generateHypothesis(execution.inputSummary);
 
       const hypothesis = await researchRepository.createResearchHypothesis({
         agentExecutionId,
@@ -97,7 +106,13 @@ export class AgentExecutionProcessor extends WorkerHost {
         metadata: { agentExecutionId, confidence: hypothesis.confidence },
       });
 
+      // provider/model/promptVersion come from the provider that actually
+      // ran in THIS (worker) process, overwriting the API process's
+      // creation-time guess, which may reflect a different env config.
       await researchRepository.markAgentExecutionSucceeded(agentExecutionId, {
+        provider: this.aiProvider.type,
+        model: result.model,
+        promptVersion: result.promptVersion,
         outputRaw: result.rawResponse,
         outputParsed: result.output,
         tokensInput: result.tokensInput,
@@ -115,8 +130,8 @@ export class AgentExecutionProcessor extends WorkerHost {
       const message = error instanceof Error ? error.message : String(error);
 
       await researchRepository.markAgentExecutionFailed(agentExecutionId, {
-        outputRaw: null,
         errorMessage: message,
+        ...this.describeBilledResponse(error, result),
       });
       await journalEventsRepository.createJournalEvent({
         eventType: "AGENT_FAILED",
@@ -127,5 +142,39 @@ export class AgentExecutionProcessor extends WorkerHost {
 
       throw error;
     }
+  }
+
+  /**
+   * Whatever is known about a billed provider response at failure time, so
+   * a FAILED row keeps the raw response, usage, cost, and the real
+   * provider/model/promptVersion (and getTodayResearchSpend counts it).
+   * Two cases carry a response: the provider itself rejected an unusable
+   * response (AIProviderResponseError), or the provider succeeded and a
+   * later persistence step failed (`result` is set). Anything else (a
+   * network/auth error, or a bug before any provider call) genuinely has
+   * no response, so outputRaw is null and usage is omitted; provider and
+   * the configured (requested) model are still recorded, because this
+   * worker process knows with certainty which provider it would have
+   * called, and the API's creation-time guess may not match it.
+   * promptVersion is left as created in that case: with no response there
+   * is no provider-reported value to correct it with.
+   */
+  private describeBilledResponse(
+    error: unknown,
+    result: AIProviderResult<ResearchHypothesisOutput> | undefined,
+  ): Omit<Parameters<typeof researchRepository.markAgentExecutionFailed>[1], "errorMessage"> {
+    const billed = error instanceof AIProviderResponseError ? error : result;
+    if (!billed) {
+      return { outputRaw: null, provider: this.aiProvider.type, model: this.aiProvider.model };
+    }
+    return {
+      outputRaw: billed.rawResponse,
+      tokensInput: billed.tokensInput,
+      tokensOutput: billed.tokensOutput,
+      costUsd: billed.costUsd,
+      provider: this.aiProvider.type,
+      model: billed.model,
+      promptVersion: billed.promptVersion,
+    };
   }
 }

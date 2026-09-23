@@ -59,9 +59,20 @@ async function createAgentExecution(input: {
   return mapAgentExecution(row);
 }
 
+/**
+ * provider/model/promptVersion are the values reported by the AIProvider
+ * that ACTUALLY ran (in the worker process), and overwrite the values
+ * guessed at createAgentExecution time (in the API process, which may have
+ * a different env configuration). The row therefore always audits the
+ * model that really produced the hypothesis, not the one that was expected
+ * to.
+ */
 async function markAgentExecutionSucceeded(
   id: string,
   output: {
+    provider: AIProviderType;
+    model: string;
+    promptVersion: string;
     outputRaw: string;
     outputParsed: Record<string, unknown>;
     tokensInput: number;
@@ -73,6 +84,9 @@ async function markAgentExecutionSucceeded(
     where: { id },
     data: {
       status: "SUCCEEDED",
+      provider: output.provider,
+      model: output.model,
+      promptVersion: output.promptVersion,
       outputRaw: output.outputRaw,
       outputParsed: output.outputParsed as Prisma.InputJsonValue,
       tokensInput: output.tokensInput,
@@ -84,9 +98,30 @@ async function markAgentExecutionSucceeded(
   return mapAgentExecution(row);
 }
 
+/**
+ * Every field beyond errorMessage is optional: a failure where the
+ * provider returned a billed-but-unusable response (see
+ * AIProviderResponseError in packages/ai-provider) passes its raw
+ * response, usage, cost, and the provider/model/promptVersion that really
+ * ran, so the FAILED row keeps the full audit trail and
+ * getTodayResearchSpend counts its tokens; a failure with no response at
+ * all (network error, a bug before any provider call) genuinely has none
+ * of these and omits them. An omitted provider/model/promptVersion leaves
+ * the creation-time value untouched (Prisma treats undefined as "do not
+ * update"); an omitted usage field stays null.
+ */
 async function markAgentExecutionFailed(
   id: string,
-  failure: { outputRaw: string | null; errorMessage: string },
+  failure: {
+    outputRaw: string | null;
+    errorMessage: string;
+    tokensInput?: number;
+    tokensOutput?: number;
+    costUsd?: Decimal;
+    provider?: AIProviderType;
+    model?: string;
+    promptVersion?: string;
+  },
 ): Promise<AgentExecution> {
   const row = await prisma.agentExecution.update({
     where: { id },
@@ -94,6 +129,12 @@ async function markAgentExecutionFailed(
       status: "FAILED",
       outputRaw: failure.outputRaw,
       errorMessage: failure.errorMessage,
+      tokensInput: failure.tokensInput,
+      tokensOutput: failure.tokensOutput,
+      costUsd: failure.costUsd?.toString(),
+      provider: failure.provider,
+      model: failure.model,
+      promptVersion: failure.promptVersion,
       completedAt: new Date(),
     },
   });

@@ -24,6 +24,14 @@ export interface AIProviderResult<T> {
 
 export interface AIProvider {
   readonly type: "MOCK" | "ANTHROPIC";
+  /**
+   * The model this provider is configured to REQUEST. Known even when a
+   * call fails with no response (network/auth error), so a FAILED audit
+   * row can still say which model was attempted. When a response exists,
+   * AIProviderResult.model (the model the API reports actually served the
+   * call, e.g. a dated snapshot) is the authoritative value instead.
+   */
+  readonly model: string;
   generateResearchHypothesis(
     input: ResearchAgentPromptInput,
   ): Promise<AIProviderResult<ResearchHypothesisOutput>>;

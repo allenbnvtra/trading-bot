@@ -72,7 +72,7 @@ import { WebhookReconciliationProcessor } from "./webhook-reconciliation/webhook
     }),
     // Unlike SCREENSHOT_QUEUE's deliberate attempts: 1, this queue needs
     // BullMQ's own backoff for TEMPORARY provider failures (a momentary
-    // Telegram/network blip) — see NotificationSendProcessor's own doc
+    // Telegram/network blip); see NotificationSendProcessor's own doc
     // comment for why PERMANENT failures are never rethrown and so never
     // actually consume these retries.
     BullModule.registerQueue({
@@ -90,7 +90,11 @@ import { WebhookReconciliationProcessor } from "./webhook-reconciliation/webhook
     // AGENT_FAILED journal event before rethrowing, so a failed job here
     // never leaves the row silently stuck at RUNNING; a human retries via a
     // fresh POST /research/hypotheses/generate rather than an automatic
-    // BullMQ retry storm re-calling the AI provider.
+    // BullMQ retry storm re-calling the AI provider. Note: defaultJobOptions
+    // only govern jobs added through the Queue instance they are registered
+    // on, and research-agent jobs are added by the API, so the registration
+    // that actually enforces attempts: 1 is apps/api's ResearchModule; this
+    // one is kept consistent with it.
     BullModule.registerQueue({
       name: RESEARCH_AGENT_QUEUE,
       defaultJobOptions: RESEARCH_AGENT_JOB_OPTIONS,

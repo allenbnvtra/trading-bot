@@ -14,6 +14,7 @@ import type { AIProvider, AIProviderResult, ResearchAgentPromptInput } from "./t
  */
 export class MockAIProvider implements AIProvider {
   readonly type = "MOCK" as const;
+  readonly model = "mock-v1";
 
   async generateResearchHypothesis(
     input: ResearchAgentPromptInput,
@@ -42,7 +43,7 @@ export class MockAIProvider implements AIProvider {
       output,
       rawResponse,
       promptVersion: AI_PROVIDER_PROMPT_VERSION,
-      model: "mock-v1",
+      model: this.model,
       tokensInput: JSON.stringify(input.summary).length,
       tokensOutput: rawResponse.length,
       costUsd: new Decimal(0),

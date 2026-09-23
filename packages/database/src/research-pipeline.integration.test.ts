@@ -71,6 +71,9 @@ describe.skipIf(!process.env.DATABASE_URL)("research pipeline hardening (live Po
       inputSummary: {},
     });
     await researchRepository.markAgentExecutionSucceeded(execution.id, {
+      provider: "MOCK",
+      model: "mock-v1",
+      promptVersion: "1.0.0",
       outputRaw: "{}",
       outputParsed: {},
       tokensInput: 0,

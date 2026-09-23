@@ -4,7 +4,9 @@ import { ConflictException } from "@nestjs/common";
 import { ResearchBudgetExceededError, ResearchStageOrderError } from "@trading-copilot/database";
 import type { EnrichedJournalTrade } from "@trading-copilot/analytics";
 import type { ResearchExperiment, StrategyVersion } from "@trading-copilot/trading-domain";
-import { ResearchService } from "./research.service";
+import { AI_PROVIDER_PROMPT_VERSION } from "@trading-copilot/ai-provider";
+import { RUN_RESEARCH_AGENT_JOB } from "@trading-copilot/shared-types";
+import { getDailyTokenBudget, ResearchService } from "./research.service";
 
 const { researchRepository, strategiesRepository, journalEventsRepository, instrumentsRepository } = vi.hoisted(() => ({
   journalEventsRepository: {
@@ -71,6 +73,57 @@ describe("ResearchService.generateHypothesis", () => {
     expect(queueAdd).not.toHaveBeenCalled();
 
     delete process.env[RESEARCH_DAILY_TOKEN_BUDGET_ENV];
+  });
+
+  it("fails closed on a malformed RESEARCH_DAILY_TOKEN_BUDGET instead of silently disabling the budget", async () => {
+    process.env[RESEARCH_DAILY_TOKEN_BUDGET_ENV] = "garbage";
+    // Far above any real budget: with the old parseInt behavior (NaN) this
+    // would have passed the `tokensUsed >= budget` check and enqueued.
+    researchRepository.getTodayResearchSpend.mockResolvedValue({ tokensUsed: 10_000_000, costUsd: new Decimal(0) });
+
+    try {
+      await expect(service.generateHypothesis({})).rejects.toThrow(/RESEARCH_DAILY_TOKEN_BUDGET must be a positive integer/);
+      expect(researchRepository.createAgentExecution).not.toHaveBeenCalled();
+      expect(queueAdd).not.toHaveBeenCalled();
+    } finally {
+      delete process.env[RESEARCH_DAILY_TOKEN_BUDGET_ENV];
+    }
+  });
+
+  it("creates the RUNNING AgentExecution with the ai-provider prompt version and enqueues the agent job", async () => {
+    delete process.env[RESEARCH_DAILY_TOKEN_BUDGET_ENV];
+    const savedApiKey = process.env.ANTHROPIC_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    researchRepository.getTodayResearchSpend.mockResolvedValue({ tokensUsed: 0, costUsd: new Decimal(0) });
+    researchRepository.listEnrichedJournalTradesForResearch.mockResolvedValue([]);
+    researchRepository.createAgentExecution.mockResolvedValue({ id: "exec-1", status: "RUNNING" });
+
+    try {
+      await service.generateHypothesis({});
+    } finally {
+      if (savedApiKey !== undefined) process.env.ANTHROPIC_API_KEY = savedApiKey;
+    }
+
+    expect(researchRepository.createAgentExecution).toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "MOCK", model: "mock-v1", promptVersion: AI_PROVIDER_PROMPT_VERSION }),
+    );
+    expect(queueAdd).toHaveBeenCalledWith(RUN_RESEARCH_AGENT_JOB, { agentExecutionId: "exec-1" });
+  });
+});
+
+describe("getDailyTokenBudget", () => {
+  it("uses the default when unset or empty", () => {
+    expect(getDailyTokenBudget(undefined)).toBe(200_000);
+    expect(getDailyTokenBudget("")).toBe(200_000);
+    expect(getDailyTokenBudget("   ")).toBe(200_000);
+  });
+
+  it("accepts a positive integer", () => {
+    expect(getDailyTokenBudget("5000")).toBe(5000);
+  });
+
+  it.each(["garbage", "5000abc", "0", "-1", "12.5", "NaN", "Infinity"])("rejects %j", (raw) => {
+    expect(() => getDailyTokenBudget(raw)).toThrow(/RESEARCH_DAILY_TOKEN_BUDGET must be a positive integer/);
   });
 });
 
@@ -322,7 +375,7 @@ describe("ResearchService.markPaperCandidate", () => {
 
     // The earliest datasetWindowStart (FINAL_TEST, 2026-01-01) and latest
     // datasetWindowEnd (WALK_FORWARD, 2026-05-01) across only the
-    // FINAL_TEST/WALK_FORWARD experiments — the RESEARCH stage's earlier
+    // FINAL_TEST/WALK_FORWARD experiments; the RESEARCH stage's earlier
     // 2025-11-01 start is deliberately excluded (see the service's inline
     // comment: including it would make the guardrail easier, not harder,
     // to pass).
