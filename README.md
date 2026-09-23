@@ -11,17 +11,18 @@ See `CLAUDE.md` for the working rules this project is built under, `docs/roadmap
 Modular monolith. See `docs/architecture.md` for the full picture.
 
 ```
-apps/api         NestJS HTTP API (also hosts the TradingView webhook endpoint and a realtime WebSocket gateway)
-apps/worker      BullMQ background job processor (runs backtests, processes TradingView webhook events)
-apps/dashboard   Next.js research dashboard
+apps/api         NestJS HTTP API (also hosts the TradingView webhook endpoint, a realtime WebSocket gateway, and the screenshot image route)
+apps/worker      BullMQ background job processor (runs backtests, processes TradingView webhook events, generates chart screenshots via Playwright)
+apps/dashboard   Next.js research dashboard (also hosts two internal-only chart render routes used only by apps/worker's Playwright capture)
 
-packages/database         Prisma schema, migrations, seed data, CSV importer, journal + webhook-ingestion repositories
-packages/trading-domain   Domain entity types (Milestone 1-3, plus forward-declared future types)
-packages/shared-types     Enums and Zod schemas shared everywhere
-packages/strategy-engine  Deterministic indicators + strategy definitions
-packages/risk-engine      Deterministic position sizing / risk / trade P&L math
-packages/backtester       Deterministic backtest engine + metrics
-packages/analytics        Deterministic cross-cutting analytics (grouping, winner/loser comparison)
+packages/database          Prisma schema, migrations, seed data, CSV importer, journal + webhook-ingestion + screenshot repositories
+packages/screenshot-storage Screenshot storage interface + local-disk implementation, storage-key generation
+packages/trading-domain    Domain entity types (Milestone 1-3, plus forward-declared future types)
+packages/shared-types      Enums and Zod schemas shared everywhere
+packages/strategy-engine   Deterministic indicators + strategy definitions
+packages/risk-engine       Deterministic position sizing / risk / trade P&L math
+packages/backtester        Deterministic backtest engine + metrics
+packages/analytics         Deterministic cross-cutting analytics (grouping, winner/loser comparison)
 ```
 
 PostgreSQL is the permanent source of truth. Redis is ephemeral queue/cache infrastructure only.
@@ -32,13 +33,14 @@ Requirements: Node.js 20+, pnpm 9+, Docker Desktop (or compatible).
 
 ```bash
 pnpm install
+pnpm --filter @trading-copilot/worker exec playwright install chromium   # one-time: chart screenshot capture (Milestone 5) needs a local Chromium
 pnpm infra:up          # starts Postgres + Redis via infra/docker-compose.yml
 pnpm db:migrate
 pnpm db:seed
 pnpm dev                # runs apps/api, apps/worker, apps/dashboard together
 ```
 
-Copy `.env.example` to `.env` first and adjust if needed — the defaults work out of the box with `infra/docker-compose.yml`.
+Copy `.env.example` to `.env` first and adjust if needed — the defaults work out of the box with `infra/docker-compose.yml`. `SCREENSHOT_STORAGE_ROOT` and `DASHBOARD_INTERNAL_BASE_URL` (both pre-set in `.env.example`) control where `apps/worker` writes captured screenshots and which URL it points Playwright at to render them.
 
 ## Commands
 
@@ -160,18 +162,33 @@ curl "http://localhost:3001/setups?source=TRADINGVIEW"
 
 To configure a real alert, see `examples/tradingview/ema-trend-pullback-webhook.pine` (a development-only integration-test fixture, not a recommended strategy) and the "Configuring a real TradingView alert" section of `docs/tradingview-setup.md`.
 
+## Chart screenshot generation (Milestone 5)
+
+A PRE_TRADE chart screenshot is requested automatically the moment a `Setup` reaches `READY`; a POST_TRADE screenshot is requested automatically when a `JournalTrade` closes. Both are captured by `apps/worker` (headless Chromium via Playwright, `pnpm --filter @trading-copilot/worker exec playwright install chromium` must have been run once — see "Local setup" above) rendering one of `apps/dashboard`'s two internal-only chart routes and screenshotting it. Full design, the cutoff rule that keeps each screenshot free of look-ahead, and the failure-code list: `docs/screenshot-design.md`.
+
+To see it work end to end locally: drive a `Setup` through the state machine to `READY` (step 3 of the "Trade journal" walkthrough above, or a `TRADINGVIEW`-sourced one via the webhook fixtures), then poll for the resulting screenshot:
+
+```bash
+curl http://localhost:3001/setups/<setup-id>/screenshots
+# once status is "READY":
+curl http://localhost:3001/screenshots/<screenshot-id>/image -o screenshot.png
+```
+
+Or watch it appear in the dashboard on `/setups/<id>` (a `ScreenshotCard` with a working retry action if it fails) or as a thumbnail column on `/live-setups`. The same pattern applies to a closed `JournalTrade`'s POST_TRADE screenshot via `GET /journal/trades/:id/screenshots` and `/trades/<id>`.
+
 ## Dashboard
 
 Once `pnpm dev` is running: http://localhost:3000
 
-- `/live-setups` — live TradingView-sourced setups, updated in realtime over WebSocket, system health at the top
-- `/setups/<id>` — a single setup's full detail and journal timeline
+- `/live-setups` — live TradingView-sourced setups, updated in realtime over WebSocket, system health at the top, screenshot thumbnails
+- `/setups/<id>` — a single setup's full detail, journal timeline, and PRE_TRADE screenshot
 - `/webhook-events` — every inbound TradingView webhook delivery, including rejected ones, admin-inspectable
 - `/research` — run and inspect backtests
 - `/journal` — chronological journal event timeline, filterable
-- `/trades` — journal trades (paper/manual-live/skipped), each with its full decision timeline
+- `/trades` — journal trades (paper/manual-live/skipped), each with its full decision timeline and POST_TRADE screenshot
 - `/analytics` — per-strategy-version performance, drill down to long/short and winner/loser breakdowns
 - `/strategies`, `/backtests`, `/market-data` — Milestone 1 pages
+- `/internal/render/setup/<id>`, `/internal/render/trade/<id>` — internal-only chart render routes consumed by `apps/worker`'s Playwright capture, not meant for a human to open directly
 
 ## Assumptions and design docs
 
@@ -180,4 +197,4 @@ Once `pnpm dev` is running: http://localhost:3000
 - `docs/trade-journal-design.md` — the trade journal / audit schema design (Milestones 2-3, implemented).
 - `docs/tradingview-setup.md` — the TradingView webhook ingestion pipeline (Milestone 3, implemented).
 - `docs/tradingview-security.md` — production hardening for the webhook endpoint (Milestone 3).
-- `docs/screenshot-design.md` — the future chart-screenshot pipeline design (Milestone 5).
+- `docs/screenshot-design.md` — the chart screenshot generation pipeline (Milestone 5, implemented).

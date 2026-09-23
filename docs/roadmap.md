@@ -22,9 +22,11 @@ The WATCH → PREPARE → READY → INVALIDATED / EXPIRED / REJECTED state machi
 
 *(There is no separate "Milestone 4": its original scope, the live setup state machine, is covered above; later milestone numbers are kept as originally planned rather than renumbered, to avoid a drive-by rename across every doc that cites a milestone number.)*
 
-## Milestone 5 — Chart screenshot generation
+## Milestone 5 — Chart screenshot generation (complete)
 
-Internal chart renderer over stored candles, Playwright screenshot capture, PRE_TRADE / POST_TRADE image types (see `docs/screenshot-design.md`).
+Internal chart renderer over stored candles (`apps/dashboard`'s two internal-only render routes), Playwright screenshot capture (`apps/worker`), PRE_TRADE / POST_TRADE image types, a database-constraint-backed idempotent/immutable `TradeScreenshot` lifecycle (`REQUESTED`/`GENERATING`/`READY`/`FAILED`), a dedicated `packages/screenshot-storage` package (local disk today, swappable for S3-compatible storage later), and dashboard screenshot status/thumbnails. See `docs/screenshot-design.md`.
+
+The candle cutoff enforced for every rendered chart (`timestamp <= cutoff`, with the cutoff read server-side from a real `MarketSnapshot`/`JournalTrade` row, never wall-clock time) is the same anti-look-ahead discipline this project applies everywhere else; the PRE_TRADE render route is structurally unable to import or call any journal/trades endpoint.
 
 ## Milestone 6 — AI Research Agent
 
