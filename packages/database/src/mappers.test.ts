@@ -526,6 +526,7 @@ describe("mapJournalEvent", () => {
       id: "event-1",
       eventType: "SETUP_CREATED",
       timestamp: new Date("2024-02-03T08:00:00.000Z"),
+      sequence: 1,
       entityType: "SETUP",
       entityId: "setup-1",
       correlationId: "setup-1",

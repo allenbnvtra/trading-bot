@@ -161,6 +161,85 @@ describe.skipIf(!process.env.DATABASE_URL)("TradingView webhook ingestion (live 
     },
   );
 
+  it("getFullTradingViewTimeline breaks a timestamp tie using sequence, not concatenation order", async () => {
+    const instrument = await instrumentsRepository.findInstrumentBySymbolAndExchange(
+      "GENFUT1",
+      "SIM-FUT",
+    );
+    expect(instrument, "expected the Milestone 1 seed to have run (pnpm db:seed)").not.toBeNull();
+    if (!instrument) return;
+
+    const resolved = await strategiesRepository.findStrategyVersionByKeyAndVersion(
+      "ema-trend-pullback",
+      "1.0.0",
+    );
+    expect(resolved).not.toBeNull();
+    if (!resolved) return;
+    const { strategy, strategyVersion } = resolved;
+
+    const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+      instrumentId: instrument.id,
+      timestamp: new Date("2024-04-01T08:00:00.000Z"),
+      timeframe: "5m",
+      metadata: { integrationTest: true },
+    });
+    const setup = await setupsRepository.createSetup({
+      instrumentId: instrument.id,
+      strategyId: strategy.id,
+      strategyVersionId: strategyVersion.id,
+      marketSnapshotId: snapshot.id,
+      direction: "LONG",
+      source: "TRADINGVIEW",
+      plannedEntry: new Decimal("5300"),
+      metadata: { integrationTest: true },
+    });
+
+    const fingerprint = `tie-break-test-${randomUUID()}`;
+    const created = await inboundWebhookEventsRepository.createInboundWebhookEvent({
+      provider: "TRADINGVIEW",
+      schemaVersion: 1,
+      rawPayload: { integrationTest: true },
+      fingerprint,
+    });
+    await inboundWebhookEventsRepository.markInboundWebhookEventProcessed(created.event.id, {
+      normalizedPayload: { integrationTest: true },
+      setupId: setup.id,
+    });
+
+    const tiedTimestamp = new Date("2024-05-01T00:00:00.000Z");
+
+    // Insert the setup-side row first (lower `sequence`), then the
+    // webhook-side row second (higher `sequence`), both sharing an
+    // identical `timestamp`. The old implementation concatenated
+    // `[...webhookRows, ...setupRows]` before sorting by timestamp alone, so
+    // a stable sort would have kept the webhook-side row first regardless
+    // of insertion order — this proves the merge now uses `sequence`, not
+    // which array a row came from.
+    const setupRow = await prisma.journalEvent.create({
+      data: {
+        eventType: "SETUP_APPROVED",
+        entityType: "SETUP",
+        entityId: setup.id,
+        correlationId: setup.id,
+        timestamp: tiedTimestamp,
+      },
+    });
+    const webhookRow = await prisma.journalEvent.create({
+      data: {
+        eventType: "WEBHOOK_NORMALIZED",
+        entityType: "INBOUND_WEBHOOK_EVENT",
+        entityId: created.event.id,
+        correlationId: created.event.id,
+        timestamp: tiedTimestamp,
+      },
+    });
+    expect(webhookRow.sequence).toBeGreaterThan(setupRow.sequence);
+
+    const timeline = await inboundWebhookEventsRepository.getFullTradingViewTimeline(created.event.id);
+    const tiedEvents = timeline.filter((event) => event.timestamp.getTime() === tiedTimestamp.getTime());
+    expect(tiedEvents.map((event) => event.id)).toEqual([setupRow.id, webhookRow.id]);
+  });
+
   it("rejection path: WEBHOOK_RECEIVED then WEBHOOK_REJECTED", async () => {
     const fingerprint = `rejection-test-${randomUUID()}`;
     const created = await inboundWebhookEventsRepository.createInboundWebhookEvent({

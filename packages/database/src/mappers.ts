@@ -600,6 +600,11 @@ export interface PrismaJournalEventRow {
   id: string;
   eventType: JournalEventType;
   timestamp: Date;
+  // Monotonic insertion-order tiebreaker — see the model-level comment on
+  // JournalEvent in prisma/schema.prisma. Used by mergeJournalEventRows to
+  // break a timestamp tie; not exposed on the mapped JournalEvent domain
+  // type.
+  sequence: number;
   entityType: JournalEntityType;
   entityId: string;
   correlationId: string | null;

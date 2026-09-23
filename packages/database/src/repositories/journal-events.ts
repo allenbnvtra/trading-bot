@@ -5,7 +5,7 @@ import type {
 } from "@trading-copilot/shared-types";
 import type { JournalEvent } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
-import { mapJournalEvent } from "../mappers";
+import { mapJournalEvent, type PrismaJournalEventRow } from "../mappers";
 
 /**
  * Append-only. This module never exposes an update or delete function — see
@@ -79,12 +79,24 @@ function toWhere(filters: JournalEventFilters): Prisma.JournalEventWhereInput {
   };
 }
 
-/** Chronological (ascending) — the natural order for reconstructing a decision timeline. */
-export async function listJournalEvents(filters: JournalEventFilters = {}): Promise<JournalEvent[]> {
-  const rows = await prisma.journalEvent.findMany({
+/**
+ * Chronological (ascending) — the natural order for reconstructing a
+ * decision timeline. `sequence` (a monotonic insertion-order column, see the
+ * model-level comment on JournalEvent in prisma/schema.prisma) is a
+ * secondary sort key so that two events sharing an identical millisecond
+ * `timestamp` still sort deterministically.
+ */
+export async function listJournalEventRows(
+  filters: JournalEventFilters = {},
+): Promise<PrismaJournalEventRow[]> {
+  return prisma.journalEvent.findMany({
     where: toWhere(filters),
-    orderBy: { timestamp: "asc" },
+    orderBy: [{ timestamp: "asc" }, { sequence: "asc" }],
   });
+}
+
+export async function listJournalEvents(filters: JournalEventFilters = {}): Promise<JournalEvent[]> {
+  const rows = await listJournalEventRows(filters);
   return rows.map(mapJournalEvent);
 }
 
@@ -95,6 +107,30 @@ export async function listJournalEvents(filters: JournalEventFilters = {}): Prom
  * / closeJournalTrade below), so this is a single indexed query rather than
  * a multi-table join across Setup/RiskCalculation/JournalTrade.
  */
+export async function getSetupTimelineRaw(setupId: string): Promise<PrismaJournalEventRow[]> {
+  return listJournalEventRows({ correlationId: setupId });
+}
+
 export async function getSetupTimeline(setupId: string): Promise<JournalEvent[]> {
-  return listJournalEvents({ correlationId: setupId });
+  const rows = await getSetupTimelineRaw(setupId);
+  return rows.map(mapJournalEvent);
+}
+
+/**
+ * Deterministic merge of two already-individually-sorted (by timestamp,
+ * sequence) raw row arrays into one globally sorted array. Pure and
+ * side-effect-free so it is unit-testable without a database. Never relies
+ * on Array.prototype.sort's incidental stability — ties are broken
+ * explicitly by `sequence`, a monotonic insertion-order column, not by
+ * which input array a row came from.
+ */
+export function mergeJournalEventRows(
+  a: PrismaJournalEventRow[],
+  b: PrismaJournalEventRow[],
+): PrismaJournalEventRow[] {
+  return [...a, ...b].sort((x, y) => {
+    const byTimestamp = x.timestamp.getTime() - y.timestamp.getTime();
+    if (byTimestamp !== 0) return byTimestamp;
+    return x.sequence - y.sequence;
+  });
 }

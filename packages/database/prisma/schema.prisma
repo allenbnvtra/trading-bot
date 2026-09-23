@@ -601,6 +601,12 @@ model JournalEvent {
 
   eventType JournalEventType
   timestamp DateTime         @default(now())
+  // Monotonic insertion-order tiebreaker. Two events can share an identical
+  // millisecond `timestamp` (see docs/tradingview-setup.md "Known
+  // limitations" — now fixed); `sequence` gives a deterministic secondary
+  // sort key that does not depend on JavaScript's incidental sort
+  // stability. Never used as a substitute for `timestamp` itself.
+  sequence  Int              @default(autoincrement())
 
   entityType JournalEntityType
   entityId   String
@@ -615,6 +621,7 @@ model JournalEvent {
 
   @@index([entityType, entityId])
   @@index([correlationId])
+  @@index([correlationId, timestamp, sequence])
   @@index([timestamp])
   @@index([instrumentId])
   @@index([strategyId, strategyVersionId])

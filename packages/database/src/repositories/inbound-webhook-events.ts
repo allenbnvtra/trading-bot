@@ -7,8 +7,13 @@ import type {
 import type { InboundWebhookEvent, JournalEvent } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
 import { NotFoundError } from "../errors";
-import { mapInboundWebhookEvent } from "../mappers";
-import { createJournalEvent, getSetupTimeline, listJournalEvents } from "./journal-events";
+import { mapInboundWebhookEvent, mapJournalEvent, type PrismaJournalEventRow } from "../mappers";
+import {
+  createJournalEvent,
+  getSetupTimelineRaw,
+  listJournalEventRows,
+  mergeJournalEventRows,
+} from "./journal-events";
 
 /**
  * Milestone 3: TradingView webhook ingestion (see docs/tradingview-setup.md
@@ -367,30 +372,36 @@ export async function listInboundWebhookEvents(
   return rows.map(mapInboundWebhookEvent);
 }
 
+/** Mirrors getSetupTimelineRaw in journal-events.ts: this webhook event's own ingestion trail. */
+export async function getInboundWebhookEventTimelineRaw(id: string): Promise<PrismaJournalEventRow[]> {
+  return listJournalEventRows({ correlationId: id });
+}
+
 /** Mirrors getSetupTimeline in setups.ts: this webhook event's own ingestion trail. */
 export async function getInboundWebhookEventTimeline(id: string): Promise<JournalEvent[]> {
-  return listJournalEvents({ correlationId: id });
+  const rows = await getInboundWebhookEventTimelineRaw(id);
+  return rows.map(mapJournalEvent);
 }
 
 /**
  * The combined reconstruction the dashboard needs: "TradingView fired ->
  * received -> normalized -> resolved -> setup created -> status changes" as
- * one timeline. Concatenates the webhook event's own trail (correlated on
- * its own id) with the Setup's own trail (correlated on setup.id) once one
- * exists, and sorts by timestamp. If no Setup was ever created (still
+ * one timeline. Merges the webhook event's own trail (correlated on its own
+ * id) with the Setup's own trail (correlated on setup.id) once one exists,
+ * via `mergeJournalEventRows` (timestamp, then `sequence` to break a tie
+ * deterministically — see that function's doc comment), mapping to the
+ * domain type only once at the end. If no Setup was ever created (still
  * processing, or rejected before one existed), returns just the webhook
  * event's own timeline.
  */
 export async function getFullTradingViewTimeline(webhookEventId: string): Promise<JournalEvent[]> {
   const event = await getInboundWebhookEvent(webhookEventId);
-  const webhookTimeline = await getInboundWebhookEventTimeline(webhookEventId);
+  const webhookRows = await getInboundWebhookEventTimelineRaw(webhookEventId);
 
   if (!event?.setupId) {
-    return webhookTimeline;
+    return webhookRows.map(mapJournalEvent);
   }
 
-  const setupTimeline = await getSetupTimeline(event.setupId);
-  return [...webhookTimeline, ...setupTimeline].sort(
-    (a, b) => a.timestamp.getTime() - b.timestamp.getTime(),
-  );
+  const setupRows = await getSetupTimelineRaw(event.setupId);
+  return mergeJournalEventRows(webhookRows, setupRows).map(mapJournalEvent);
 }
