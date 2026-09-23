@@ -66,7 +66,10 @@ describe("AgentExecutionProcessor", () => {
   it("on success: persists the hypothesis, marks the execution SUCCEEDED, records journal events", async () => {
     const agentExecution = buildAgentExecution();
     vi.mocked(researchRepository.getAgentExecution).mockResolvedValue(agentExecution as never);
-    vi.mocked(researchRepository.createResearchHypothesis).mockResolvedValue({ id: "hyp-1" } as never);
+    vi.mocked(researchRepository.createResearchHypothesis).mockResolvedValue({
+      id: "hyp-1",
+      confidence: "LOW",
+    } as never);
     vi.mocked(researchRepository.markAgentExecutionSucceeded).mockResolvedValue({
       ...agentExecution,
       status: "SUCCEEDED",
@@ -80,6 +83,14 @@ describe("AgentExecutionProcessor", () => {
     expect(researchRepository.markAgentExecutionSucceeded).toHaveBeenCalledTimes(1);
     expect(journalEventsRepository.createJournalEvent).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: "AGENT_STARTED", entityType: "AGENT_EXECUTION", entityId: "exec-1" }),
+    );
+    expect(journalEventsRepository.createJournalEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "RESEARCH_HYPOTHESIS_CREATED",
+        entityType: "RESEARCH_HYPOTHESIS",
+        entityId: "hyp-1",
+        metadata: expect.objectContaining({ agentExecutionId: "exec-1" }),
+      }),
     );
     expect(journalEventsRepository.createJournalEvent).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: "AGENT_COMPLETED", entityType: "AGENT_EXECUTION", entityId: "exec-1" }),

@@ -90,6 +90,13 @@ export class AgentExecutionProcessor extends WorkerHost {
         proposedStrategyDefinition: result.output.proposedStrategyDefinition,
       });
 
+      await journalEventsRepository.createJournalEvent({
+        eventType: "RESEARCH_HYPOTHESIS_CREATED",
+        entityType: "RESEARCH_HYPOTHESIS",
+        entityId: hypothesis.id,
+        metadata: { agentExecutionId, confidence: hypothesis.confidence },
+      });
+
       await researchRepository.markAgentExecutionSucceeded(agentExecutionId, {
         outputRaw: result.rawResponse,
         outputParsed: result.output,
