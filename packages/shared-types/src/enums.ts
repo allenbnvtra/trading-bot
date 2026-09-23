@@ -32,6 +32,10 @@ export const STRATEGY_VERSION_STATUSES = [
   "VALIDATION",
   "OUT_OF_SAMPLE",
   "WALK_FORWARD",
+  // Milestone 7: an AI-proposed strategy that passed WALK_FORWARD and is
+  // awaiting a human decision to promote it to paper trading. See
+  // docs/ai-research.md.
+  "PAPER_CANDIDATE",
   "PAPER_TRADING",
   "APPROVED",
   "PAUSED",
@@ -196,6 +200,15 @@ export const JOURNAL_EVENT_TYPES = [
   "NOTIFICATION_SENT",
   "NOTIFICATION_RETRYING",
   "NOTIFICATION_FAILED",
+  // Milestone 7 — AI research agent + experiment framework. See
+  // docs/ai-research.md.
+  "AGENT_STARTED",
+  "AGENT_COMPLETED",
+  "AGENT_FAILED",
+  "RESEARCH_HYPOTHESIS_CREATED",
+  "RESEARCH_EXPERIMENT_CREATED",
+  "RESEARCH_EXPERIMENT_COMPLETED",
+  "STRATEGY_VERSION_STATUS_CHANGED",
 ] as const;
 export type JournalEventType = (typeof JOURNAL_EVENT_TYPES)[number];
 
@@ -212,6 +225,9 @@ export const JOURNAL_ENTITY_TYPES = [
   "INBOUND_WEBHOOK_EVENT",
   "TRADE_SCREENSHOT",
   "NOTIFICATION_DELIVERY",
+  "AGENT_EXECUTION",
+  "RESEARCH_HYPOTHESIS",
+  "RESEARCH_EXPERIMENT",
 ] as const;
 export type JournalEntityType = (typeof JOURNAL_ENTITY_TYPES)[number];
 

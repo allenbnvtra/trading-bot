@@ -14,6 +14,14 @@ import type { Direction } from "@trading-copilot/shared-types";
  * Milestone 2 — they are now real, persisted entities in
  * packages/trading-domain/src/journal-entities.ts.
  *
+ * AgentExecution (plus the new ResearchHypothesis/ResearchExperiment) was
+ * promoted out of this file in Milestone 7 — it is now a real, persisted
+ * entity in packages/trading-domain/src/research-entities.ts, scoped to the
+ * RESEARCH agent type only (see AgentType there). This placeholder's
+ * broader setup/trade-linked runtime-agent shape remains unimplemented and
+ * is deliberately not reintroduced here; a future runtime agent gets its
+ * own real entity when that milestone lands, the same way this one did.
+ *
  * Do not import the remaining placeholders below from real code paths
  * (strategy-engine, backtester, risk-engine, database, or the API/dashboard)
  * until the milestone that implements them lands.
@@ -26,32 +34,6 @@ export interface Signal {
   strategyVersionId: string;
   timestamp: Date;
   description: string;
-}
-
-/** Audit record of a single future runtime AI agent invocation. Never stores hidden chain-of-thought. */
-export interface AgentExecution {
-  id: string;
-  setupId: string;
-  tradeId?: string;
-  agentType: string;
-  agentVersion: string;
-  provider: string;
-  model: string;
-  promptTemplateVersion: string;
-  startedAt: Date;
-  completedAt: Date | null;
-  latencyMs: number | null;
-  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
-  structuredInput: Record<string, unknown>;
-  structuredOutput: Record<string, unknown> | null;
-  decision?: string;
-  confidence?: number;
-  reasoningSummary?: string;
-  inputTokens?: number;
-  outputTokens?: number;
-  estimatedCost?: string;
-  errorCode?: string;
-  errorMessage?: string;
 }
 
 /** A trade ticket handed to the human for manual execution. Never auto-executed. */

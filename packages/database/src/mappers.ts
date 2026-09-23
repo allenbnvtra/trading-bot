@@ -1,5 +1,6 @@
 import { Decimal } from "decimal.js";
 import type {
+  AgentExecution,
   Backtest,
   BacktestAssumptions,
   BacktestMetrics,
@@ -12,6 +13,8 @@ import type {
   MarketSnapshot,
   NotificationDelivery,
   PostTradeAnalysis,
+  ResearchExperiment,
+  ResearchHypothesis,
   RiskCalculation,
   Setup,
   Strategy,
@@ -180,6 +183,7 @@ export interface PrismaStrategyVersionRow {
   parameters: unknown;
   status: StrategyVersionStatus;
   createdAt: Date;
+  sourceHypothesisId: string | null;
 }
 
 /**
@@ -200,6 +204,7 @@ export function mapStrategyVersion<TParameters = Record<string, unknown>>(
     parameters: row.parameters as TParameters,
     status: row.status,
     createdAt: row.createdAt,
+    sourceHypothesisId: row.sourceHypothesisId,
   };
 }
 
@@ -814,5 +819,103 @@ export function mapTradingViewInstrumentMapping(
     symbol: row.symbol,
     instrumentId: row.instrumentId,
     createdAt: row.createdAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 7: AgentExecution / ResearchHypothesis / ResearchExperiment
+// ---------------------------------------------------------------------------
+
+export interface PrismaAgentExecutionRow {
+  id: string;
+  agentType: string;
+  provider: string;
+  model: string;
+  promptVersion: string;
+  inputSummary: unknown;
+  outputRaw: string | null;
+  outputParsed: unknown;
+  status: string;
+  errorMessage: string | null;
+  tokensInput: number | null;
+  tokensOutput: number | null;
+  costUsd: Decimalish | null;
+  startedAt: Date;
+  completedAt: Date | null;
+}
+
+export function mapAgentExecution(row: PrismaAgentExecutionRow): AgentExecution {
+  return {
+    id: row.id,
+    agentType: row.agentType as AgentExecution["agentType"],
+    provider: row.provider as AgentExecution["provider"],
+    model: row.model,
+    promptVersion: row.promptVersion,
+    inputSummary: toRecord(row.inputSummary),
+    outputRaw: row.outputRaw,
+    outputParsed: row.outputParsed === null ? null : toRecord(row.outputParsed),
+    status: row.status as AgentExecution["status"],
+    errorMessage: row.errorMessage,
+    tokensInput: row.tokensInput,
+    tokensOutput: row.tokensOutput,
+    costUsd: toNullableDomainDecimal(row.costUsd),
+    startedAt: row.startedAt,
+    completedAt: row.completedAt,
+  };
+}
+
+export interface PrismaResearchHypothesisRow {
+  id: string;
+  agentExecutionId: string;
+  title: string;
+  statement: string;
+  rationale: string;
+  confidence: string;
+  sourceDataSummary: unknown;
+  proposedStrategyDefinition: unknown;
+  status: string;
+  createdAt: Date;
+}
+
+export function mapResearchHypothesis(row: PrismaResearchHypothesisRow): ResearchHypothesis {
+  return {
+    id: row.id,
+    agentExecutionId: row.agentExecutionId,
+    title: row.title,
+    statement: row.statement,
+    rationale: row.rationale,
+    confidence: row.confidence as ResearchHypothesis["confidence"],
+    sourceDataSummary: toRecord(row.sourceDataSummary),
+    proposedStrategyDefinition: toRecord(row.proposedStrategyDefinition),
+    status: row.status as ResearchHypothesis["status"],
+    createdAt: row.createdAt,
+  };
+}
+
+export interface PrismaResearchExperimentRow {
+  id: string;
+  hypothesisId: string;
+  datasetRole: string;
+  datasetWindowStart: Date;
+  datasetWindowEnd: Date;
+  backtestId: string | null;
+  status: string;
+  failureReason: string | null;
+  createdAt: Date;
+  completedAt: Date | null;
+}
+
+export function mapResearchExperiment(row: PrismaResearchExperimentRow): ResearchExperiment {
+  return {
+    id: row.id,
+    hypothesisId: row.hypothesisId,
+    datasetRole: row.datasetRole as ResearchExperiment["datasetRole"],
+    datasetWindowStart: row.datasetWindowStart,
+    datasetWindowEnd: row.datasetWindowEnd,
+    backtestId: row.backtestId,
+    status: row.status as ResearchExperiment["status"],
+    failureReason: row.failureReason,
+    createdAt: row.createdAt,
+    completedAt: row.completedAt,
   };
 }

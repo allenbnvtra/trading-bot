@@ -1,7 +1,9 @@
+import { Prisma } from "@prisma/client";
 import { Decimal } from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
   backtestAssumptionsToJson,
+  mapAgentExecution,
   mapBacktest,
   mapBacktestMetrics,
   mapBacktestTrade,
@@ -12,6 +14,8 @@ import {
   mapMarketSnapshot,
   mapNotificationDelivery,
   mapPostTradeAnalysis,
+  mapResearchExperiment,
+  mapResearchHypothesis,
   mapRiskCalculation,
   mapSetup,
   mapStrategy,
@@ -136,11 +140,13 @@ describe("mapStrategy / mapStrategyVersion", () => {
       parameters: { fastEmaPeriod: 20, slowEmaPeriod: 50 },
       status: "BACKTESTING",
       createdAt: new Date("2024-01-01T00:00:00.000Z"),
+      sourceHypothesisId: null,
     };
 
     const version = mapStrategyVersion<EmaTrendPullbackParams>(row);
     expect(version.parameters.fastEmaPeriod).toBe(20);
     expect(version.status).toBe("BACKTESTING");
+    expect(version.sourceHypothesisId).toBeNull();
   });
 });
 
@@ -661,6 +667,106 @@ describe("mapNotificationDelivery", () => {
       failureMessage: null,
       createdAt: new Date("2026-09-23T00:00:00Z"),
       updatedAt: new Date("2026-09-23T00:00:02Z"),
+    });
+  });
+});
+
+describe("mapAgentExecution", () => {
+  it("maps every field, including nullable ones, without fabricating defaults", () => {
+    const row = {
+      id: "exec-1",
+      agentType: "RESEARCH" as const,
+      provider: "MOCK" as const,
+      model: "mock-v1",
+      promptVersion: "1.0.0",
+      inputSummary: { tradeCount: 10 },
+      outputRaw: '{"title":"x"}',
+      outputParsed: { title: "x" },
+      status: "SUCCEEDED" as const,
+      errorMessage: null,
+      tokensInput: 120,
+      tokensOutput: 340,
+      costUsd: new Prisma.Decimal("0.0021"),
+      startedAt: new Date("2026-09-23T00:00:00Z"),
+      completedAt: new Date("2026-09-23T00:00:05Z"),
+    };
+
+    expect(mapAgentExecution(row)).toEqual({
+      id: "exec-1",
+      agentType: "RESEARCH",
+      provider: "MOCK",
+      model: "mock-v1",
+      promptVersion: "1.0.0",
+      inputSummary: { tradeCount: 10 },
+      outputRaw: '{"title":"x"}',
+      outputParsed: { title: "x" },
+      status: "SUCCEEDED",
+      errorMessage: null,
+      tokensInput: 120,
+      tokensOutput: 340,
+      costUsd: new Decimal("0.0021"),
+      startedAt: new Date("2026-09-23T00:00:00Z"),
+      completedAt: new Date("2026-09-23T00:00:05Z"),
+    });
+  });
+});
+
+describe("mapResearchHypothesis", () => {
+  it("maps every field, including nullable ones", () => {
+    const row = {
+      id: "hyp-1",
+      agentExecutionId: "exec-1",
+      title: "EMA pullback in low-vol regime",
+      statement: "Long entries after a fast/slow EMA cross show higher averageR in LOW volume regime candles.",
+      rationale: "Winners had 18% lower average volumePercentile than losers in the sample.",
+      confidence: "MEDIUM" as const,
+      sourceDataSummary: { tradeCount: 140 },
+      proposedStrategyDefinition: { version: "1.0.0" },
+      status: "PROPOSED" as const,
+      createdAt: new Date("2026-09-23T00:00:06Z"),
+    };
+
+    expect(mapResearchHypothesis(row)).toEqual({
+      id: "hyp-1",
+      agentExecutionId: "exec-1",
+      title: "EMA pullback in low-vol regime",
+      statement: "Long entries after a fast/slow EMA cross show higher averageR in LOW volume regime candles.",
+      rationale: "Winners had 18% lower average volumePercentile than losers in the sample.",
+      confidence: "MEDIUM",
+      sourceDataSummary: { tradeCount: 140 },
+      proposedStrategyDefinition: { version: "1.0.0" },
+      status: "PROPOSED",
+      createdAt: new Date("2026-09-23T00:00:06Z"),
+    });
+  });
+});
+
+describe("mapResearchExperiment", () => {
+  it("maps every field, including nullable ones", () => {
+    const row = {
+      id: "expr-1",
+      hypothesisId: "hyp-1",
+      datasetRole: "RESEARCH" as const,
+      datasetWindowStart: new Date("2026-01-01T00:00:00Z"),
+      datasetWindowEnd: new Date("2026-03-01T00:00:00Z"),
+      backtestId: null,
+      status: "QUEUED" as const,
+      failureReason: null,
+      createdAt: new Date("2026-09-23T00:00:07Z"),
+      completedAt: null,
+    };
+
+    expect(mapResearchExperiment(row)).toEqual({
+      id: "expr-1",
+      hypothesisId: "hyp-1",
+      datasetRole: "RESEARCH",
+      datasetWindowStart: new Date("2026-01-01T00:00:00Z"),
+      datasetWindowEnd: new Date("2026-03-01T00:00:00Z"),
+      backtestId: null,
+      status: "QUEUED",
+      failureReason: null,
+      createdAt: new Date("2026-09-23T00:00:07Z"),
+      completedAt: null,
     });
   });
 });

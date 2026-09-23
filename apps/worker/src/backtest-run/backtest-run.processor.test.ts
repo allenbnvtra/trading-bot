@@ -99,6 +99,7 @@ function makeStrategyVersion(): StrategyVersion {
     },
     status: "BACKTESTING",
     createdAt: new Date(),
+    sourceHypothesisId: null,
   };
 }
 

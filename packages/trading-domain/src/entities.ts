@@ -70,6 +70,10 @@ export interface StrategyVersion<TParameters = Record<string, unknown>> {
   parameters: TParameters;
   status: StrategyVersionStatus;
   createdAt: Date;
+  // Milestone 7. Set only when this version originated from an AI-proposed
+  // hypothesis (see ResearchHypothesis.proposedStrategyDefinition in
+  // research-entities.ts). Null for every hand-authored version.
+  sourceHypothesisId: string | null;
 }
 
 export interface BacktestAssumptions {
