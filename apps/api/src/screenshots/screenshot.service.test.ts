@@ -13,6 +13,28 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+/**
+ * Default: no existing BullMQ job for this id, so enqueueJobIfNeeded falls
+ * through to the add() branch - matches every test below that doesn't
+ * explicitly care about job-state-awareness (mirrors
+ * webhook-reconciliation.processor.test.ts's own makeQueue() helper).
+ */
+function makeQueue() {
+  return {
+    add: vi.fn().mockResolvedValue(undefined),
+    getJob: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+/** A minimal stub of a real BullMQ Job, just enough for enqueueJobIfNeeded's state check. */
+function makeJobStub(state: string) {
+  return {
+    id: "stub-job-id",
+    getState: vi.fn().mockResolvedValue(state),
+    retry: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 describe("ScreenshotService.requestPreTradeScreenshot", () => {
   it("looks up the Setup for its marketSnapshotId, then requests idempotently, then enqueues with a deterministic jobId when not already in flight", async () => {
     vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
@@ -21,13 +43,14 @@ describe("ScreenshotService.requestPreTradeScreenshot", () => {
       alreadyInFlight: false,
     });
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
     const result = await service.requestPreTradeScreenshot("setup-1");
 
     expect(tradeScreenshotsRepository.requestOrRetryScreenshot).toHaveBeenCalledWith(
       expect.objectContaining({ setupId: "setup-1", type: "PRE_TRADE", marketSnapshotId: "snap-1" }),
     );
+    expect(queue.getJob).toHaveBeenCalledWith("screenshot-1");
     expect(queue.add).toHaveBeenCalledWith(
       expect.any(String),
       { screenshotId: "screenshot-1" },
@@ -36,14 +59,14 @@ describe("ScreenshotService.requestPreTradeScreenshot", () => {
     expect(result.id).toBe("screenshot-1");
   });
 
-  it("still (re-)enqueues when already in flight but the row is still REQUESTED (recovers a row whose original enqueue never happened)", async () => {
+  it("still (re-)enqueues when already in flight but the row is still REQUESTED and no job exists (recovers a row whose original enqueue never happened)", async () => {
     vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
     vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
       screenshot: { id: "screenshot-1", status: "REQUESTED" } as never,
       alreadyInFlight: true,
     });
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
     await service.requestPreTradeScreenshot("setup-1");
 
@@ -54,38 +77,97 @@ describe("ScreenshotService.requestPreTradeScreenshot", () => {
     );
   });
 
-  it("does not re-enqueue when already in flight and GENERATING", async () => {
+  it("retries (never blindly re-adds) when the row is REQUESTED and the existing job has reached failed - the FAILED-retry regression fix", async () => {
+    vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
+    vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
+      screenshot: { id: "screenshot-1", status: "REQUESTED" } as never,
+      alreadyInFlight: false,
+    });
+    const queue = makeQueue();
+    const jobStub = makeJobStub("failed");
+    queue.getJob.mockResolvedValue(jobStub);
+
+    const service = new ScreenshotService(queue as never);
+    await service.requestPreTradeScreenshot("setup-1");
+
+    expect(jobStub.retry).toHaveBeenCalledWith("failed");
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it("logs a warning and skips (never re-adds or retries) when the existing job has reached completed while the row is still REQUESTED", async () => {
+    vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
+    vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
+      screenshot: { id: "screenshot-1", status: "REQUESTED" } as never,
+      alreadyInFlight: true,
+    });
+    const queue = makeQueue();
+    const jobStub = makeJobStub("completed");
+    queue.getJob.mockResolvedValue(jobStub);
+
+    const service = new ScreenshotService(queue as never);
+    await service.requestPreTradeScreenshot("setup-1");
+
+    expect(jobStub.retry).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it.each(["waiting", "active", "delayed"])(
+    "skips silently (never re-adds or retries) when the existing job is still %s",
+    async (state) => {
+      vi.mocked(setupsRepository.getSetup).mockResolvedValue({
+        id: "setup-1",
+        marketSnapshotId: "snap-1",
+      } as never);
+      vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
+        screenshot: { id: "screenshot-1", status: "REQUESTED" } as never,
+        alreadyInFlight: true,
+      });
+      const queue = makeQueue();
+      const jobStub = makeJobStub(state);
+      queue.getJob.mockResolvedValue(jobStub);
+
+      const service = new ScreenshotService(queue as never);
+      await service.requestPreTradeScreenshot("setup-1");
+
+      expect(jobStub.retry).not.toHaveBeenCalled();
+      expect(queue.add).not.toHaveBeenCalled();
+    },
+  );
+
+  it("does not touch BullMQ at all when already in flight and GENERATING (never calls getJob)", async () => {
     vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
     vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
       screenshot: { id: "screenshot-1", status: "GENERATING" } as never,
       alreadyInFlight: true,
     });
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
     await service.requestPreTradeScreenshot("setup-1");
 
+    expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
   });
 
-  it("does not re-enqueue when already in flight and READY", async () => {
+  it("does not touch BullMQ at all when already in flight and READY (never calls getJob)", async () => {
     vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
     vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
       screenshot: { id: "screenshot-1", status: "READY" } as never,
       alreadyInFlight: true,
     });
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
     await service.requestPreTradeScreenshot("setup-1");
 
+    expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
   });
 
   it("404s when the Setup does not exist", async () => {
     vi.mocked(setupsRepository.getSetup).mockResolvedValue(null);
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
 
     await expect(service.requestPreTradeScreenshot("missing")).rejects.toMatchObject({ status: 404 });
@@ -105,7 +187,7 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
       alreadyInFlight: false,
     });
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
     const result = await service.requestPostTradeScreenshot("trade-1");
 
@@ -125,7 +207,7 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
     expect(result.id).toBe("screenshot-2");
   });
 
-  it("still (re-)enqueues when already in flight but the row is still REQUESTED", async () => {
+  it("still (re-)enqueues when already in flight but the row is still REQUESTED and no job exists", async () => {
     vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
       id: "trade-1",
       setupId: "setup-1",
@@ -136,7 +218,7 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
       alreadyInFlight: true,
     });
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
     await service.requestPostTradeScreenshot("trade-1");
 
@@ -147,7 +229,28 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
     );
   });
 
-  it("does not re-enqueue when already in flight and GENERATING", async () => {
+  it("retries (never blindly re-adds) when the row is REQUESTED and the existing job has reached failed", async () => {
+    vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
+      id: "trade-1",
+      setupId: "setup-1",
+      status: "CLOSED",
+    } as never);
+    vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
+      screenshot: { id: "screenshot-2", status: "REQUESTED" } as never,
+      alreadyInFlight: false,
+    });
+    const queue = makeQueue();
+    const jobStub = makeJobStub("failed");
+    queue.getJob.mockResolvedValue(jobStub);
+
+    const service = new ScreenshotService(queue as never);
+    await service.requestPostTradeScreenshot("trade-1");
+
+    expect(jobStub.retry).toHaveBeenCalledWith("failed");
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it("does not touch BullMQ at all when already in flight and GENERATING", async () => {
     vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
       id: "trade-1",
       setupId: "setup-1",
@@ -158,14 +261,15 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
       alreadyInFlight: true,
     });
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
     await service.requestPostTradeScreenshot("trade-1");
 
+    expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
   });
 
-  it("does not re-enqueue when already in flight and READY", async () => {
+  it("does not touch BullMQ at all when already in flight and READY", async () => {
     vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
       id: "trade-1",
       setupId: "setup-1",
@@ -176,17 +280,18 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
       alreadyInFlight: true,
     });
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
     await service.requestPostTradeScreenshot("trade-1");
 
+    expect(queue.getJob).not.toHaveBeenCalled();
     expect(queue.add).not.toHaveBeenCalled();
   });
 
   it("404s when the JournalTrade does not exist", async () => {
     vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue(null);
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
 
     await expect(service.requestPostTradeScreenshot("missing")).rejects.toMatchObject({ status: 404 });
@@ -200,7 +305,7 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
       status: "OPEN",
     } as never);
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
 
     await expect(service.requestPostTradeScreenshot("trade-1")).rejects.toMatchObject({ status: 409 });
@@ -214,7 +319,7 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
       status: "CLOSED",
     } as never);
 
-    const queue = { add: vi.fn() };
+    const queue = makeQueue();
     const service = new ScreenshotService(queue as never);
 
     await expect(service.requestPostTradeScreenshot("trade-1")).rejects.toMatchObject({ status: 422 });
