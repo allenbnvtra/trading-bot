@@ -107,8 +107,15 @@ function buildProcessor(provider = { send: vi.fn() }, storage = { save: vi.fn(),
   return { processor, provider, storage };
 }
 
-function buildJob(notificationDeliveryId = NOTIFICATION_ID) {
-  return { data: { notificationDeliveryId } } as never;
+function buildJob(
+  notificationDeliveryId = NOTIFICATION_ID,
+  attempts: { attemptsMade: number; maxAttempts: number } = { attemptsMade: 1, maxAttempts: 5 },
+) {
+  return {
+    data: { notificationDeliveryId },
+    attemptsMade: attempts.attemptsMade,
+    opts: { attempts: attempts.maxAttempts },
+  } as never;
 }
 
 describe("NotificationSendProcessor", () => {
@@ -192,6 +199,56 @@ describe("NotificationSendProcessor", () => {
     vi.mocked(provider.send).mockRejectedValue(temporaryError);
 
     await expect(processor.process(buildJob())).rejects.toThrow(temporaryError);
+
+    expect(notificationDeliveriesRepository.markNotificationRetrying).toHaveBeenCalledWith(NOTIFICATION_ID, {
+      failureCode: "RATE_LIMITED",
+      failureMessage: "rate limited",
+    });
+    expect(notificationDeliveriesRepository.markNotificationFailed).not.toHaveBeenCalled();
+  });
+
+  it("on a TEMPORARY provider error on BullMQ's last configured attempt, marks the notification FAILED (RETRY_ATTEMPTS_EXHAUSTED) and does NOT rethrow (job resolves cleanly)", async () => {
+    vi.mocked(notificationDeliveriesRepository.getById).mockResolvedValue(
+      buildNotification({ notificationType: "SETUP_PREPARE" }) as never,
+    );
+    vi.mocked(setupsRepository.getSetup).mockResolvedValue(buildSetup({ status: "PREPARE" }) as never);
+    vi.mocked(instrumentsRepository.getInstrument).mockResolvedValue({ symbol: "ES" } as never);
+    vi.mocked(strategiesRepository.getStrategyWithVersions).mockResolvedValue({ name: "Breakout" } as never);
+    vi.mocked(strategiesRepository.getStrategyVersion).mockResolvedValue({ version: "1.0.0" } as never);
+    const { processor, provider } = buildProcessor();
+    const temporaryError = new NotificationProviderError("rate limited", "TEMPORARY", "RATE_LIMITED");
+    vi.mocked(provider.send).mockRejectedValue(temporaryError);
+
+    // attemptsMade (5) >= opts.attempts (5): this is the last attempt BullMQ
+    // will make.
+    const job = buildJob(NOTIFICATION_ID, { attemptsMade: 5, maxAttempts: 5 });
+
+    await expect(processor.process(job)).resolves.toBeUndefined();
+
+    expect(notificationDeliveriesRepository.markNotificationFailed).toHaveBeenCalledWith(NOTIFICATION_ID, {
+      failureCode: "RETRY_ATTEMPTS_EXHAUSTED",
+      failureMessage: expect.stringContaining("rate limited"),
+    });
+    expect(notificationDeliveriesRepository.markNotificationRetrying).not.toHaveBeenCalled();
+  });
+
+  it("on a TEMPORARY provider error when attemptsMade is still below the configured ceiling, keeps the existing RETRYING+rethrow behavior unchanged", async () => {
+    vi.mocked(notificationDeliveriesRepository.getById).mockResolvedValue(
+      buildNotification({ notificationType: "SETUP_PREPARE" }) as never,
+    );
+    vi.mocked(setupsRepository.getSetup).mockResolvedValue(buildSetup({ status: "PREPARE" }) as never);
+    vi.mocked(instrumentsRepository.getInstrument).mockResolvedValue({ symbol: "ES" } as never);
+    vi.mocked(strategiesRepository.getStrategyWithVersions).mockResolvedValue({ name: "Breakout" } as never);
+    vi.mocked(strategiesRepository.getStrategyVersion).mockResolvedValue({ version: "1.0.0" } as never);
+    const { processor, provider } = buildProcessor();
+    const temporaryError = new NotificationProviderError("rate limited", "TEMPORARY", "RATE_LIMITED");
+    vi.mocked(provider.send).mockRejectedValue(temporaryError);
+
+    // attemptsMade (4) < opts.attempts (5): BullMQ will still make another
+    // attempt after this one.
+    const job = buildJob(NOTIFICATION_ID, { attemptsMade: 4, maxAttempts: 5 });
+
+    await expect(processor.process(job)).rejects.toThrow(temporaryError);
 
     expect(notificationDeliveriesRepository.markNotificationRetrying).toHaveBeenCalledWith(NOTIFICATION_ID, {
       failureCode: "RATE_LIMITED",

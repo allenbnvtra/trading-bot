@@ -1,3 +1,4 @@
+import { TELEGRAM_REQUEST_TIMEOUT_MS } from "@trading-copilot/shared-types";
 import {
   NotificationProviderError,
   type NotificationMessage,
@@ -39,6 +40,16 @@ export class TelegramNotificationProvider implements NotificationProvider {
       // Deliberately does not include the caught error's message: it may
       // contain request details (including the URL, which embeds the bot
       // token) depending on the fetch implementation/runtime.
+      //
+      // This catch-all also covers doFetch's AbortSignal.timeout firing
+      // (a hung connection or stalled response past
+      // TELEGRAM_REQUEST_TIMEOUT_MS): Node's fetch rejects that with a
+      // DOMException named "TimeoutError" (verified against this
+      // codebase's Node version), which is neither specially detected nor
+      // needs to be - it is already TEMPORARY/NETWORK_ERROR like any other
+      // fetch-level rejection, which is the correct classification (a
+      // timeout is exactly the kind of transient condition BullMQ's retry
+      // should handle, not a permanent one).
       throw new NotificationProviderError("network error contacting Telegram", "TEMPORARY", "NETWORK_ERROR");
     }
 
@@ -57,12 +68,13 @@ export class TelegramNotificationProvider implements NotificationProvider {
       form.set("chat_id", this.config.chatId);
       form.set("caption", message.text);
       form.set("photo", new Blob([new Uint8Array(message.imageBuffer)], { type: "image/png" }), "screenshot.png");
-      return fetch(url, { method: "POST", body: form });
+      return fetch(url, { method: "POST", body: form, signal: AbortSignal.timeout(TELEGRAM_REQUEST_TIMEOUT_MS) });
     }
     return fetch(url, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ chat_id: this.config.chatId, text: message.text }),
+      signal: AbortSignal.timeout(TELEGRAM_REQUEST_TIMEOUT_MS),
     });
   }
 

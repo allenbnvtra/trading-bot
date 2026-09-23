@@ -98,15 +98,19 @@ const NOTIFICATION_TYPE_TO_SETUP_STATUS: Record<SetupStatusNoticeNotificationTyp
  *
  * TEMPORARY provider errors are recorded (RETRYING) and rethrown so
  * BullMQ's own attempts/backoff (registered on NOTIFICATION_QUEUE in
- * app.module.ts) retries the job. PERMANENT provider errors and
- * SetupContextNotFoundError (a Setup referencing a missing Instrument/
- * Strategy/StrategyVersion/MarketSnapshot row) are both recorded (FAILED)
- * and NOT rethrown — neither a bad token/chat id nor a dangling foreign
- * key will ever succeed on retry, so the job completes rather than
- * exhausting BullMQ's attempts pointlessly; the FAILED row plus its
- * NOTIFICATION_FAILED journal event is the durable record. Any other,
- * unclassified exception is treated conservatively as retryable
- * (RETRYING, rethrown).
+ * app.module.ts) retries the job - UNLESS this is already the last attempt
+ * BullMQ will make (job.attemptsMade >= job.opts.attempts), in which case
+ * the row is recorded FAILED (RETRY_ATTEMPTS_EXHAUSTED) and NOT rethrown
+ * instead, since NOTIFICATION_QUEUE has no reconciliation sweep and a row
+ * left at RETRYING with no further BullMQ attempt coming would be stranded
+ * forever. PERMANENT provider errors and SetupContextNotFoundError (a Setup
+ * referencing a missing Instrument/Strategy/StrategyVersion/MarketSnapshot
+ * row) are both recorded (FAILED) and NOT rethrown — neither a bad
+ * token/chat id nor a dangling foreign key will ever succeed on retry, so
+ * the job completes rather than exhausting BullMQ's attempts pointlessly;
+ * the FAILED row plus its NOTIFICATION_FAILED journal event is the durable
+ * record. Any other, unclassified exception is treated conservatively as
+ * retryable (RETRYING, rethrown) unless it too is on its last attempt.
  */
 @Processor(NOTIFICATION_QUEUE)
 @Injectable()
@@ -194,6 +198,36 @@ export class NotificationSendProcessor extends WorkerHost {
       }
       const failureCode = error instanceof NotificationProviderError ? error.failureCode : "UNKNOWN_ERROR";
       const failureMessage = error instanceof Error ? error.message : String(error);
+
+      // NOTIFICATION_QUEUE has no reconciliation sweep for exhausted-attempts
+      // rows (unlike WEBHOOK_RECONCILIATION_QUEUE's
+      // WebhookReconciliationProcessor) - so if BullMQ is not going to make
+      // another attempt after this one, marking RETRYING+rethrowing would
+      // strand the row at RETRYING forever: invisible to
+      // countRecentFailedNotifications (FAILED-only), and unrecoverable by a
+      // later requestOrRetryNotification call (which skips any row that
+      // isn't already FAILED, treating it as still in flight). job.attemptsMade
+      // is the number of attempts made so far *including this one* (BullMQ
+      // Job type - see job.d.ts), and job.opts.attempts is this job's
+      // configured attempts ceiling (defaultJobOptions.attempts: 5 from
+      // NOTIFICATION_QUEUE's registration in app.module.ts, but read from the
+      // job itself rather than hardcoded here). ?? 1 mirrors BullMQ's own
+      // default of a single attempt when none is configured.
+      const isLastAttempt = job.attemptsMade >= (job.opts.attempts ?? 1);
+      if (isLastAttempt) {
+        await notificationDeliveriesRepository.markNotificationFailed(notificationDeliveryId, {
+          failureCode: "RETRY_ATTEMPTS_EXHAUSTED",
+          failureMessage: `Exhausted all retry attempts after a temporary failure: ${failureMessage}`,
+        });
+        // Deliberately does not rethrow, same reasoning as the PERMANENT/
+        // SetupContextNotFoundError branches above: there is no further
+        // BullMQ-driven retry coming regardless (this was the last attempt),
+        // so rethrowing would only produce a spurious "failed" job log entry
+        // without changing anything - FAILED now is the honest, auditable
+        // outcome instead of a row silently stranded at RETRYING forever.
+        return;
+      }
+
       await notificationDeliveriesRepository.markNotificationRetrying(notificationDeliveryId, {
         failureCode,
         failureMessage,

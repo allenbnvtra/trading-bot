@@ -144,6 +144,56 @@ describe("TelegramNotificationProvider", () => {
     });
   });
 
+  it("passes an AbortSignal to fetch on sendMessage so a hung request fails fast rather than blocking the job indefinitely", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, result: { message_id: 1 } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new TelegramNotificationProvider({ botToken: "x", chatId: "123" });
+
+    await provider.send({ text: "x", imageBuffer: null });
+
+    const [, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(calledInit.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("passes an AbortSignal to fetch on sendPhoto too", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ ok: true, result: { message_id: 1 } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new TelegramNotificationProvider({ botToken: "x", chatId: "123" });
+
+    await provider.send({ text: "x", imageBuffer: Buffer.from("png-bytes") });
+
+    const [, calledInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(calledInit.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("classifies a timeout (fetch rejecting with an abort-shaped DOMException, matching what AbortSignal.timeout produces) as TEMPORARY/NETWORK_ERROR", async () => {
+    // Mirrors what Node's fetch actually rejects with when an
+    // AbortSignal.timeout()-backed signal fires: a DOMException named
+    // "TimeoutError" (verified directly against this codebase's Node
+    // version rather than assumed) - not a plain Error, and not
+    // necessarily "AbortError" depending on runtime, which is exactly why
+    // the provider's catch-all (rather than a name-specific check) is the
+    // right way to classify it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+    );
+    const provider = new TelegramNotificationProvider({ botToken: "x", chatId: "123" });
+
+    await expect(provider.send({ text: "x", imageBuffer: null })).rejects.toMatchObject({
+      kind: "TEMPORARY",
+      failureCode: "NETWORK_ERROR",
+    });
+  });
+
   it("never includes the bot token in a thrown error's message", async () => {
     vi.stubGlobal(
       "fetch",

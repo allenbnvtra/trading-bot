@@ -15,6 +15,14 @@ export const NOTIFICATION_TEMPLATE_VERSION = "1.0.0";
 export const NOTIFICATION_SCREENSHOT_WAIT_MS = 8_000;
 export const NOTIFICATION_SCREENSHOT_POLL_INTERVAL_MS = 500;
 
+/** Per-request timeout for outbound calls to the Telegram Bot API
+ * (TelegramNotificationProvider). Without this, a hung TCP connection or a
+ * stalled response would block the BullMQ job (and that worker slot)
+ * indefinitely instead of failing fast into the TEMPORARY/retry path -
+ * mirrors RENDER_READY_TIMEOUT_MS's role for screenshot rendering
+ * (packages/shared-types/src/screenshot.ts). */
+export const TELEGRAM_REQUEST_TIMEOUT_MS = 10_000;
+
 /** Mirrors ScreenshotGenerationJobPayload's shape/role — the BullMQ job body
  * carries only the NotificationDelivery id; the worker loads everything else
  * (setup, notification type, provider) from the row itself. */
