@@ -120,16 +120,22 @@ describe("requestOrRetryNotification", () => {
     });
     const retried = notificationRow({ status: "QUEUED", failureCode: null, failureMessage: null });
     vi.mocked(prisma.notificationDelivery.findFirst).mockResolvedValue(existing as never);
-    vi.mocked(prisma.notificationDelivery.update).mockResolvedValue(retried as never);
+    vi.mocked(prisma.notificationDelivery.updateMany).mockResolvedValue({ count: 1 } as never);
+    vi.mocked(prisma.notificationDelivery.findUniqueOrThrow).mockResolvedValue(retried as never);
 
     const result = await requestOrRetryNotification(REQUEST_INPUT);
 
     expect(result.alreadyInFlight).toBe(false);
     expect(result.notification.status).toBe("QUEUED");
-    expect(prisma.notificationDelivery.update).toHaveBeenCalledWith({
-      where: { id: existing.id },
+    // Guarded by an atomic conditional updateMany keyed on status: "FAILED"
+    // (mirroring markNotificationSending/Sent/Failed/Retrying below), not a
+    // plain update() keyed only on id — two concurrent retries of the same
+    // FAILED row must not both "win".
+    expect(prisma.notificationDelivery.updateMany).toHaveBeenCalledWith({
+      where: { id: existing.id, status: "FAILED" },
       data: { status: "QUEUED", failureCode: null, failureMessage: null },
     });
+    expect(prisma.notificationDelivery.update).not.toHaveBeenCalled();
     expect(prisma.notificationDelivery.create).not.toHaveBeenCalled();
 
     // NOTIFICATION_RETRYING journal event, correlated onto the Setup, with
@@ -147,6 +153,30 @@ describe("requestOrRetryNotification", () => {
         }),
       }),
     });
+  });
+
+  it("loses a concurrent FAILED -> QUEUED reset race and returns the winner's row instead, never throwing", async () => {
+    mockTransaction();
+    const existing = notificationRow({
+      status: "FAILED",
+      failureCode: "PROVIDER_ERROR",
+      failureMessage: "telegram send failed",
+    });
+    // Someone else's updateMany already won the FAILED -> QUEUED reset
+    // between our findFirst above and this updateMany, so this call's
+    // conditional updateMany matches zero rows.
+    const winnersRow = notificationRow({ status: "QUEUED", failureCode: null, failureMessage: null });
+    vi.mocked(prisma.notificationDelivery.findFirst)
+      .mockResolvedValueOnce(existing as never) // inside $transaction: findByIdempotencyKey
+      .mockResolvedValueOnce(winnersRow as never); // re-read after the updateMany miss
+    vi.mocked(prisma.notificationDelivery.updateMany).mockResolvedValue({ count: 0 } as never);
+
+    const result = await requestOrRetryNotification(REQUEST_INPUT);
+
+    expect(result.alreadyInFlight).toBe(true);
+    expect(result.notification.status).toBe("QUEUED");
+    expect(prisma.notificationDelivery.create).not.toHaveBeenCalled();
+    expect(prisma.notificationDelivery.update).not.toHaveBeenCalled();
   });
 
   it("re-reads and returns the winner's row on a P2002 unique-constraint race, never throwing", async () => {

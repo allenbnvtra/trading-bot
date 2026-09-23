@@ -89,10 +89,27 @@ export async function requestOrRetryNotification(
 
       if (existing) {
         const previousFailureCode = existing.failureCode;
-        const retried = await tx.notificationDelivery.update({
-          where: { id: existing.id },
+        const result = await tx.notificationDelivery.updateMany({
+          where: { id: existing.id, status: "FAILED" },
           data: { status: "QUEUED", failureCode: null, failureMessage: null },
         });
+
+        if (result.count === 0) {
+          // Someone else concurrently won the FAILED -> QUEUED reset between
+          // our read above and this updateMany. Re-read whatever they left
+          // behind rather than treat this call as a fresh winner — mirrors
+          // the P2002 catch path below, which does the same thing for the
+          // create race.
+          const current = await findByIdempotencyKey(tx, input);
+          if (!current) {
+            // Unreachable in practice: we just observed this row inside the
+            // same transaction. Surface a real error rather than fabricate one.
+            throw new NotFoundError("NotificationDelivery", existing.id);
+          }
+          return { notification: mapNotificationDelivery(current), alreadyInFlight: true };
+        }
+
+        const retried = await tx.notificationDelivery.findUniqueOrThrow({ where: { id: existing.id } });
 
         await createJournalEvent(
           {

@@ -143,6 +143,15 @@ describe.skipIf(!process.env.DATABASE_URL)("notification-deliveries idempotency 
     expect(a.notification.id).toBe(created.id);
     expect(b.notification.id).toBe(created.id);
 
+    // Exactly one of the two racers actually won the FAILED -> QUEUED reset
+    // (alreadyInFlight: false); the other observed the winner's row rather
+    // than resetting it a second time. Without this assertion, a regression
+    // to a plain `update()` keyed only on `id` (no `status: "FAILED"` guard)
+    // would still pass "1 row exists" while letting both racers win.
+    const flags = [a.alreadyInFlight, b.alreadyInFlight];
+    expect(flags.filter((f) => f === false)).toHaveLength(1);
+    expect(flags.filter((f) => f === true)).toHaveLength(1);
+
     const rows = await prisma.notificationDelivery.findMany({
       where: { setupId: setup.id, notificationType: "SETUP_PREPARE" },
     });
