@@ -128,3 +128,59 @@ export class JournalTradeActiveDecisionConflictError extends Error {
     Object.setPrototypeOf(this, JournalTradeActiveDecisionConflictError.prototype);
   }
 }
+
+/**
+ * Thrown by researchRepository.createResearchExperiment when the insert
+ * violates the partial unique index `ResearchExperiment_hypothesis_final_
+ * test_key` (at most one non-FAILED FINAL_TEST experiment per hypothesis
+ * see that migration and the model comment on ResearchExperiment in
+ * prisma/schema.prisma). Mirrors JournalTradeActiveDecisionConflictError's
+ * role for the JournalTrade partial unique index: this is the real,
+ * database-level backstop for the "a final-test dataset is not renewable"
+ * rule documented in docs/research-methodology.md.
+ */
+export class FinalTestAlreadySpentError extends Error {
+  constructor(public readonly hypothesisId: string) {
+    super(
+      `Hypothesis ${hypothesisId} already has a FINAL_TEST experiment in progress or completed. ` +
+        "Per docs/research-methodology.md, a final-test dataset is not renewable; propose a new " +
+        "hypothesis (a fork of this one) if a fresh final-test period is needed.",
+    );
+    this.name = "FinalTestAlreadySpentError";
+    Object.setPrototypeOf(this, FinalTestAlreadySpentError.prototype);
+  }
+}
+
+/**
+ * Thrown by researchRepository.createResearchExperiment when the requested
+ * datasetRole is asked for out of order (e.g. VALIDATION before a COMPLETED
+ * RESEARCH experiment exists for the same hypothesis). Enforced in
+ * application code, not the schema, because "COMPLETED" is a status value,
+ * not something a database CHECK constraint can express across rows.
+ */
+export class ResearchStageOrderError extends Error {
+  constructor(
+    public readonly hypothesisId: string,
+    public readonly requestedRole: string,
+    public readonly reason: string,
+  ) {
+    super(`Cannot create a ${requestedRole} experiment for hypothesis ${hypothesisId}: ${reason}`);
+    this.name = "ResearchStageOrderError";
+    Object.setPrototypeOf(this, ResearchStageOrderError.prototype);
+  }
+}
+
+/**
+ * Thrown by the (future) ResearchService.assertWithinBudget before
+ * enqueueing a new AgentExecution job, once a daily token/cost ceiling is
+ * exceeded. Defined here now, alongside researchRepository.getTodayResearchSpend
+ * which supplies the numbers it is checked against, even though no caller
+ * throws it yet in this task.
+ */
+export class ResearchBudgetExceededError extends Error {
+  constructor(public readonly reason: string) {
+    super(`Research experiment budget exceeded: ${reason}`);
+    this.name = "ResearchBudgetExceededError";
+    Object.setPrototypeOf(this, ResearchBudgetExceededError.prototype);
+  }
+}

@@ -19,3 +19,4 @@ export * as tradeScreenshotsRepository from "./repositories/trade-screenshots";
 export * as notificationDeliveriesRepository from "./repositories/notification-deliveries";
 export * as inboundWebhookEventsRepository from "./repositories/inbound-webhook-events";
 export * as tradingViewInstrumentMappingsRepository from "./repositories/tradingview-instrument-mappings";
+export * from "./repositories/research";

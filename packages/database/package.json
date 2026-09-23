@@ -19,6 +19,7 @@
     "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
+    "@trading-copilot/analytics": "workspace:*",
     "@trading-copilot/risk-engine": "workspace:*",
     "@trading-copilot/shared-types": "workspace:*",
     "@trading-copilot/trading-domain": "workspace:*",
