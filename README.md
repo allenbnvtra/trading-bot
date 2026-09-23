@@ -11,8 +11,8 @@ See `CLAUDE.md` for the working rules this project is built under, `docs/roadmap
 Modular monolith. See `docs/architecture.md` for the full picture.
 
 ```
-apps/api         NestJS HTTP API (also hosts the TradingView webhook endpoint, a realtime WebSocket gateway, and the screenshot image route)
-apps/worker      BullMQ background job processor (runs backtests, processes TradingView webhook events, generates chart screenshots via Playwright)
+apps/api         NestJS HTTP API (also hosts the TradingView webhook endpoint, a realtime WebSocket gateway, the screenshot image route, and the NotificationDelivery lifecycle/enqueue decision)
+apps/worker      BullMQ background job processor (runs backtests, processes TradingView webhook events, generates chart screenshots via Playwright, sends outbound notifications)
 apps/dashboard   Next.js research dashboard (also hosts two internal-only chart render routes used only by apps/worker's Playwright capture)
 
 packages/database          Prisma schema, migrations, seed data, CSV importer, journal + webhook-ingestion + screenshot repositories
@@ -176,16 +176,44 @@ curl http://localhost:3001/screenshots/<screenshot-id>/image -o screenshot.png
 
 Or watch it appear in the dashboard on `/setups/<id>` (a `ScreenshotCard` with a working retry action if it fails) or as a thumbnail column on `/live-setups`. The same pattern applies to a closed `JournalTrade`'s POST_TRADE screenshot via `GET /journal/trades/:id/screenshots` and `/trades/<id>`.
 
+## Notifications + manual trade workflow (Milestone 6)
+
+A `Setup` reaching `READY` (and, if `NOTIFICATION_PREPARE_ENABLED=true`, `PREPARE`) triggers an outbound notification with full setup context, and its later `INVALIDATED`/`EXPIRED`/`REJECTED` outcome triggers a follow-up notice, but only if the human was actually told about it in the first place. Nothing here places a broker order - the notification's entire purpose is to prompt the human to open the dashboard and decide. Full policy and mechanics: `docs/notifications.md`.
+
+By default (`NOTIFICATION_MODE=console`, the setting `.env.example` ships with), no external service is ever contacted - notifications are logged to the worker's console instead, which is enough to develop and test the whole pipeline with zero credentials.
+
+To send real Telegram messages instead:
+
+1. Message [@BotFather](https://t.me/BotFather) on Telegram, run `/newbot`, and follow the prompts. BotFather gives you a bot token (looks like `123456789:AAG...`).
+2. Message your new bot at least once (Telegram requires this before a bot can message you back), then get your chat id - the simplest way is to message [@userinfobot](https://t.me/userinfobot), which replies with your numeric id.
+3. In `.env`, set:
+   ```
+   NOTIFICATION_MODE=telegram
+   TELEGRAM_ENABLED=true
+   TELEGRAM_BOT_TOKEN=<the token from BotFather>
+   TELEGRAM_CHAT_ID=<your chat id>
+   ```
+   All three `TELEGRAM_*` variables must be set (and `TELEGRAM_ENABLED=true`) or the worker silently falls back to the console provider rather than crashing - see `docs/notifications.md`.
+4. Verify the credentials work without waiting for a real setup to go `READY`:
+   ```bash
+   pnpm --filter @trading-copilot/worker notification:test
+   ```
+   With no Telegram configuration this prints a message explaining nothing was sent and exits cleanly. With valid configuration it sends a real one-line test message to your chat and prints the resulting `externalMessageId`.
+
+Every `NotificationDelivery`'s status (`QUEUED`/`SENDING`/`SENT`/`FAILED`/`RETRYING`) is visible on `/setups/<id>` and via `GET /setups/:id/notifications` - the dashboard never talks to Telegram directly, only reads this status back through the API.
+
+The dashboard's `/setups/<id>` page also carries the manual trade workflow this notification system exists to support: PAPER TRADE / I ENTERED THIS TRADE records a real journal trade against a `READY` setup (`POST /setups/:id/execute`), and SKIP TRADE records a deliberate pass with an optional reason (`POST /setups/:id/skip`) without changing the setup's own lifecycle status.
+
 ## Dashboard
 
 Once `pnpm dev` is running: http://localhost:3000
 
 - `/live-setups` — live TradingView-sourced setups, updated in realtime over WebSocket, system health at the top, screenshot thumbnails
-- `/setups/<id>` — a single setup's full detail, journal timeline, and PRE_TRADE screenshot
+- `/setups/<id>` - a single setup's full detail, journal timeline, PRE_TRADE screenshot, notification status, and PAPER TRADE / I ENTERED THIS TRADE / SKIP TRADE actions
 - `/webhook-events` — every inbound TradingView webhook delivery, including rejected ones, admin-inspectable
 - `/research` — run and inspect backtests
 - `/journal` — chronological journal event timeline, filterable
-- `/trades` — journal trades (paper/manual-live/skipped), each with its full decision timeline and POST_TRADE screenshot
+- `/trades` - journal trades (paper/manual-live/skipped), each with its full decision timeline, outcome (win/loss/breakeven), and POST_TRADE screenshot
 - `/analytics` — per-strategy-version performance, drill down to long/short and winner/loser breakdowns
 - `/strategies`, `/backtests`, `/market-data` — Milestone 1 pages
 - `/internal/render/setup/<id>`, `/internal/render/trade/<id>` — internal-only chart render routes consumed by `apps/worker`'s Playwright capture, not meant for a human to open directly
@@ -194,7 +222,8 @@ Once `pnpm dev` is running: http://localhost:3000
 
 - `docs/backtesting-assumptions.md` — every conservative assumption baked into the backtester (entry timing, same-candle stop/target, slippage, commissions, gaps).
 - `docs/research-methodology.md` — the guardrails required before any future AI-driven strategy research is trusted.
-- `docs/trade-journal-design.md` — the trade journal / audit schema design (Milestones 2-3, implemented).
+- `docs/trade-journal-design.md` - the trade journal / audit schema design (Milestones 2, 3, and 6, implemented).
 - `docs/tradingview-setup.md` — the TradingView webhook ingestion pipeline (Milestone 3, implemented).
 - `docs/tradingview-security.md` — production hardening for the webhook endpoint (Milestone 3).
 - `docs/screenshot-design.md` — the chart screenshot generation pipeline (Milestone 5, implemented).
+- `docs/notifications.md` - the notification provider abstraction, policy, idempotency/retry behavior, and manual trade workflow (Milestone 6, implemented).
