@@ -2,10 +2,12 @@ import { Body, Controller, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post
 import {
   closeJournalTradeSchema,
   createJournalTradeSchema,
+  createPostTradeScreenshotSchema,
   journalTradeListQuerySchema,
   recordJournalTradeEntrySchema,
   type CloseJournalTradeInput,
   type CreateJournalTradeInput,
+  type CreatePostTradeScreenshotInput,
   type JournalTradeListQuery,
   type RecordJournalTradeEntryInput,
 } from "@trading-copilot/shared-types";
@@ -65,16 +67,12 @@ export class JournalTradeController {
    * trade. The automatic trigger on close (see
    * journal-trade.service.ts#close) is what fires this in the normal flow.
    */
-  // Deliberately no @Body()/ZodValidationPipe here despite
-  // createPostTradeScreenshotSchema existing in @trading-copilot/shared-types
-  // for this purpose: wiring it in was tried and reverted (see task-10
-  // report) because express.json() leaves req.body === undefined for a
-  // bodyless POST (no Content-Type), and z.object({}).safeParse(undefined)
-  // fails, turning a plain `curl -X POST` manual trigger into a 400. The id
-  // path param is the only input this route needs.
   @Post(":id/screenshots/post-trade")
   @HttpCode(HttpStatus.ACCEPTED)
-  requestPostTradeScreenshot(@Param("id", new ParseUUIDPipe()) id: string) {
+  requestPostTradeScreenshot(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Body(new ZodValidationPipe(createPostTradeScreenshotSchema)) _body: CreatePostTradeScreenshotInput,
+  ) {
     return this.screenshotService.requestPostTradeScreenshot(id);
   }
 }

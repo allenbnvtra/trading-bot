@@ -14,10 +14,10 @@ beforeEach(() => {
 });
 
 describe("ScreenshotService.requestPreTradeScreenshot", () => {
-  it("looks up the Setup for its marketSnapshotId, then requests idempotently, then enqueues only when not already in flight", async () => {
+  it("looks up the Setup for its marketSnapshotId, then requests idempotently, then enqueues with a deterministic jobId when not already in flight", async () => {
     vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
     vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
-      screenshot: { id: "screenshot-1" } as never,
+      screenshot: { id: "screenshot-1", status: "REQUESTED" } as never,
       alreadyInFlight: false,
     });
 
@@ -28,14 +28,50 @@ describe("ScreenshotService.requestPreTradeScreenshot", () => {
     expect(tradeScreenshotsRepository.requestOrRetryScreenshot).toHaveBeenCalledWith(
       expect.objectContaining({ setupId: "setup-1", type: "PRE_TRADE", marketSnapshotId: "snap-1" }),
     );
-    expect(queue.add).toHaveBeenCalledWith(expect.any(String), { screenshotId: "screenshot-1" });
+    expect(queue.add).toHaveBeenCalledWith(
+      expect.any(String),
+      { screenshotId: "screenshot-1" },
+      { jobId: "screenshot-1" },
+    );
     expect(result.id).toBe("screenshot-1");
   });
 
-  it("does not re-enqueue when the screenshot is already in flight", async () => {
+  it("still (re-)enqueues when already in flight but the row is still REQUESTED (recovers a row whose original enqueue never happened)", async () => {
     vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
     vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
-      screenshot: { id: "screenshot-1" } as never,
+      screenshot: { id: "screenshot-1", status: "REQUESTED" } as never,
+      alreadyInFlight: true,
+    });
+
+    const queue = { add: vi.fn() };
+    const service = new ScreenshotService(queue as never);
+    await service.requestPreTradeScreenshot("setup-1");
+
+    expect(queue.add).toHaveBeenCalledWith(
+      expect.any(String),
+      { screenshotId: "screenshot-1" },
+      { jobId: "screenshot-1" },
+    );
+  });
+
+  it("does not re-enqueue when already in flight and GENERATING", async () => {
+    vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
+    vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
+      screenshot: { id: "screenshot-1", status: "GENERATING" } as never,
+      alreadyInFlight: true,
+    });
+
+    const queue = { add: vi.fn() };
+    const service = new ScreenshotService(queue as never);
+    await service.requestPreTradeScreenshot("setup-1");
+
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it("does not re-enqueue when already in flight and READY", async () => {
+    vi.mocked(setupsRepository.getSetup).mockResolvedValue({ id: "setup-1", marketSnapshotId: "snap-1" } as never);
+    vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
+      screenshot: { id: "screenshot-1", status: "READY" } as never,
       alreadyInFlight: true,
     });
 
@@ -58,14 +94,14 @@ describe("ScreenshotService.requestPreTradeScreenshot", () => {
 });
 
 describe("ScreenshotService.requestPostTradeScreenshot", () => {
-  it("looks up the JournalTrade, requests idempotently with setupId: null (a POST_TRADE row is keyed on tradeId, not setupId), then enqueues", async () => {
+  it("looks up the JournalTrade, requests idempotently with setupId: null (a POST_TRADE row is keyed on tradeId, not setupId), then enqueues with a deterministic jobId", async () => {
     vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
       id: "trade-1",
       setupId: "setup-1",
       status: "CLOSED",
     } as never);
     vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
-      screenshot: { id: "screenshot-2" } as never,
+      screenshot: { id: "screenshot-2", status: "REQUESTED" } as never,
       alreadyInFlight: false,
     });
 
@@ -81,18 +117,62 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
         type: "POST_TRADE",
       }),
     );
-    expect(queue.add).toHaveBeenCalledWith(expect.any(String), { screenshotId: "screenshot-2" });
+    expect(queue.add).toHaveBeenCalledWith(
+      expect.any(String),
+      { screenshotId: "screenshot-2" },
+      { jobId: "screenshot-2" },
+    );
     expect(result.id).toBe("screenshot-2");
   });
 
-  it("does not re-enqueue when the screenshot is already in flight", async () => {
+  it("still (re-)enqueues when already in flight but the row is still REQUESTED", async () => {
     vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
       id: "trade-1",
-      setupId: null,
+      setupId: "setup-1",
       status: "CLOSED",
     } as never);
     vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
-      screenshot: { id: "screenshot-2" } as never,
+      screenshot: { id: "screenshot-2", status: "REQUESTED" } as never,
+      alreadyInFlight: true,
+    });
+
+    const queue = { add: vi.fn() };
+    const service = new ScreenshotService(queue as never);
+    await service.requestPostTradeScreenshot("trade-1");
+
+    expect(queue.add).toHaveBeenCalledWith(
+      expect.any(String),
+      { screenshotId: "screenshot-2" },
+      { jobId: "screenshot-2" },
+    );
+  });
+
+  it("does not re-enqueue when already in flight and GENERATING", async () => {
+    vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
+      id: "trade-1",
+      setupId: "setup-1",
+      status: "CLOSED",
+    } as never);
+    vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
+      screenshot: { id: "screenshot-2", status: "GENERATING" } as never,
+      alreadyInFlight: true,
+    });
+
+    const queue = { add: vi.fn() };
+    const service = new ScreenshotService(queue as never);
+    await service.requestPostTradeScreenshot("trade-1");
+
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it("does not re-enqueue when already in flight and READY", async () => {
+    vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
+      id: "trade-1",
+      setupId: "setup-1",
+      status: "CLOSED",
+    } as never);
+    vi.mocked(tradeScreenshotsRepository.requestOrRetryScreenshot).mockResolvedValue({
+      screenshot: { id: "screenshot-2", status: "READY" } as never,
       alreadyInFlight: true,
     });
 
@@ -113,17 +193,31 @@ describe("ScreenshotService.requestPostTradeScreenshot", () => {
     expect(tradeScreenshotsRepository.requestOrRetryScreenshot).not.toHaveBeenCalled();
   });
 
-  it("404s when the JournalTrade is not CLOSED yet", async () => {
+  it("409s (state conflict, not not-found) when the JournalTrade is not CLOSED yet", async () => {
     vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
       id: "trade-1",
-      setupId: null,
+      setupId: "setup-1",
       status: "OPEN",
     } as never);
 
     const queue = { add: vi.fn() };
     const service = new ScreenshotService(queue as never);
 
-    await expect(service.requestPostTradeScreenshot("trade-1")).rejects.toMatchObject({ status: 404 });
+    await expect(service.requestPostTradeScreenshot("trade-1")).rejects.toMatchObject({ status: 409 });
+    expect(tradeScreenshotsRepository.requestOrRetryScreenshot).not.toHaveBeenCalled();
+  });
+
+  it("422s when the trade has no Setup lineage (setupId: null) - no chart context to render from", async () => {
+    vi.mocked(journalTradesRepository.getJournalTrade).mockResolvedValue({
+      id: "trade-1",
+      setupId: null,
+      status: "CLOSED",
+    } as never);
+
+    const queue = { add: vi.fn() };
+    const service = new ScreenshotService(queue as never);
+
+    await expect(service.requestPostTradeScreenshot("trade-1")).rejects.toMatchObject({ status: 422 });
     expect(tradeScreenshotsRepository.requestOrRetryScreenshot).not.toHaveBeenCalled();
   });
 });

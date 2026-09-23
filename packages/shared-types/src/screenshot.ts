@@ -26,9 +26,23 @@ export interface ScreenshotGenerationJobPayload {
   screenshotId: string;
 }
 
-/** Both PRE_TRADE/POST_TRADE screenshot-generation endpoints take no request body — the setup/trade id comes from the URL path param. An empty schema still runs through this app's usual ZodValidationPipe convention for consistency with every other endpoint, rather than skipping @Body() validation entirely (no such precedent exists elsewhere in this codebase — checked). */
-export const createPreTradeScreenshotSchema = z.object({});
+/**
+ * Both PRE_TRADE/POST_TRADE screenshot-generation endpoints take no
+ * meaningful request body — the setup/trade id comes from the URL path
+ * param. `.strict().optional()` (not a bare `z.object({})`) is deliberate:
+ * a bodyless `curl -X POST` (no Content-Type header) leaves Nest's
+ * `@Body()` as `undefined`, and a bare `z.object({})` fails
+ * `.safeParse(undefined)` — that would 400 the exact "no body" case these
+ * routes' manual/admin re-trigger use case relies on. `.optional()` accepts
+ * `undefined` and `{}` while `.strict()` still rejects an unexpected key
+ * (verified: `undefined` passes, `{}` passes, `{a:1}` fails, `[]` fails) —
+ * see screenshot.test.ts. Both routes actually wire this in via
+ * `@Body(new ZodValidationPipe(...))` (apps/api's
+ * setup.controller.ts/journal-trade.controller.ts), matching every other
+ * endpoint's convention.
+ */
+export const createPreTradeScreenshotSchema = z.object({}).strict().optional();
 export type CreatePreTradeScreenshotInput = z.infer<typeof createPreTradeScreenshotSchema>;
 
-export const createPostTradeScreenshotSchema = z.object({});
+export const createPostTradeScreenshotSchema = z.object({}).strict().optional();
 export type CreatePostTradeScreenshotInput = z.infer<typeof createPostTradeScreenshotSchema>;

@@ -12,10 +12,12 @@ import {
   UsePipes,
 } from "@nestjs/common";
 import {
+  createPreTradeScreenshotSchema,
   createRiskCalculationSchema,
   createSetupSchema,
   setupListQuerySchema,
   updateSetupStatusSchema,
+  type CreatePreTradeScreenshotInput,
   type CreateRiskCalculationInput,
   type CreateSetupInput,
   type SetupListQuery,
@@ -95,16 +97,12 @@ export class SetupController {
    * in the normal flow; this route exists for manual re-requests (e.g. after
    * a FAILED render) without needing to force another status transition.
    */
-  // Deliberately no @Body()/ZodValidationPipe here despite
-  // createPreTradeScreenshotSchema existing in @trading-copilot/shared-types
-  // for this purpose: wiring it in was tried and reverted (see task-10
-  // report) because express.json() leaves req.body === undefined for a
-  // bodyless POST (no Content-Type), and z.object({}).safeParse(undefined)
-  // fails, turning a plain `curl -X POST` manual trigger into a 400. The id
-  // path param is the only input this route needs.
   @Post(":id/screenshots/pre-trade")
   @HttpCode(HttpStatus.ACCEPTED)
-  requestPreTradeScreenshot(@Param("id", new ParseUUIDPipe()) id: string) {
+  requestPreTradeScreenshot(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Body(new ZodValidationPipe(createPreTradeScreenshotSchema)) _body: CreatePreTradeScreenshotInput,
+  ) {
     return this.screenshotService.requestPreTradeScreenshot(id);
   }
 }

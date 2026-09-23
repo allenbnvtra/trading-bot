@@ -106,18 +106,10 @@ describe("JournalTradeService", () => {
       expect(screenshotService.requestPostTradeScreenshot).not.toHaveBeenCalled();
     });
 
-    it("requests a POST_TRADE screenshot after a trade closes", async () => {
-      journalTradesRepository.closeJournalTrade.mockResolvedValue({ id: "trade-1", status: "CLOSED" } as never);
-
-      await service.close("trade-1", { actualExit: "110", exitTimestamp: "2024-01-02T00:00:00.000Z" });
-
-      expect(screenshotService.requestPostTradeScreenshot).toHaveBeenCalledWith("trade-1");
-    });
-
-    it("requests a POST_TRADE screenshot even when the trade has no setupId (a standalone JournalTrade)", async () => {
+    it("requests a POST_TRADE screenshot after a trade with a Setup closes", async () => {
       journalTradesRepository.closeJournalTrade.mockResolvedValue({
         id: "trade-1",
-        setupId: null,
+        setupId: "setup-1",
         status: "CLOSED",
       } as never);
 
@@ -126,8 +118,28 @@ describe("JournalTradeService", () => {
       expect(screenshotService.requestPostTradeScreenshot).toHaveBeenCalledWith("trade-1");
     });
 
+    it("does NOT request a POST_TRADE screenshot when the trade has no Setup lineage (setupId: null) - no chart context, would guarantee a FAILED row every time", async () => {
+      journalTradesRepository.closeJournalTrade.mockResolvedValue({
+        id: "trade-1",
+        setupId: null,
+        status: "CLOSED",
+      } as never);
+
+      const result = await service.close("trade-1", {
+        actualExit: "110",
+        exitTimestamp: "2024-01-02T00:00:00.000Z",
+      });
+
+      expect(screenshotService.requestPostTradeScreenshot).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ id: "trade-1", status: "CLOSED" });
+    });
+
     it("does not let a screenshot-request failure fail the close operation itself", async () => {
-      journalTradesRepository.closeJournalTrade.mockResolvedValue({ id: "trade-1", status: "CLOSED" } as never);
+      journalTradesRepository.closeJournalTrade.mockResolvedValue({
+        id: "trade-1",
+        setupId: "setup-1",
+        status: "CLOSED",
+      } as never);
       screenshotService.requestPostTradeScreenshot.mockRejectedValue(new Error("queue down"));
 
       await expect(

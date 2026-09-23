@@ -18,11 +18,26 @@ describe("screenshot constants", () => {
 });
 
 describe("screenshot request body schemas", () => {
-  it("accepts an empty body for the pre-trade screenshot endpoint", () => {
-    expect(() => createPreTradeScreenshotSchema.parse({})).not.toThrow();
-  });
+  for (const [name, schema] of [
+    ["pre-trade", createPreTradeScreenshotSchema],
+    ["post-trade", createPostTradeScreenshotSchema],
+  ] as const) {
+    describe(`${name} screenshot schema`, () => {
+      it("accepts undefined (a bodyless request - no Content-Type header)", () => {
+        expect(schema.safeParse(undefined).success).toBe(true);
+      });
 
-  it("accepts an empty body for the post-trade screenshot endpoint", () => {
-    expect(() => createPostTradeScreenshotSchema.parse({})).not.toThrow();
-  });
+      it("accepts an empty object body", () => {
+        expect(schema.safeParse({}).success).toBe(true);
+      });
+
+      it("rejects a body with an unexpected key", () => {
+        expect(schema.safeParse({ a: 1 }).success).toBe(false);
+      });
+
+      it("rejects a non-object body", () => {
+        expect(schema.safeParse([]).success).toBe(false);
+      });
+    });
+  }
 });

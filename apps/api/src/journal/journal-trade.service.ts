@@ -82,14 +82,23 @@ export class JournalTradeService {
 
     // Screenshot generation is best-effort and must never fail the close
     // operation it is a side effect of — same convention as
-    // setup.service.ts's READY-transition trigger. Fires regardless of
-    // whether this trade was created from a Setup (trade.setupId set) or
-    // stands alone (setupId: null, e.g. a manually-logged trade) —
-    // ScreenshotService.requestPostTradeScreenshot keys a POST_TRADE
-    // screenshot on tradeId alone, never on setupId.
-    await this.screenshotService.requestPostTradeScreenshot(trade.id).catch((err: unknown) => {
-      this.logger.warn(`Failed to request POST_TRADE screenshot for JournalTrade ${trade.id}: ${String(err)}`);
-    });
+    // setup.service.ts's READY-transition trigger. A trade with no Setup
+    // lineage (setupId: null - a legitimate domain state, e.g. a
+    // manually-logged trade) has no MarketSnapshot to source a timeframe
+    // from, so there is no chart context to render at all: skip the
+    // request entirely rather than create a row/job/Chromium launch that's
+    // guaranteed to end FAILED every time. ScreenshotService itself also
+    // rejects this case (422) for a caller hitting the manual endpoint
+    // directly, but the automatic trigger here never even attempts it.
+    if (trade.setupId === null) {
+      this.logger.debug(
+        `Skipping POST_TRADE screenshot for JournalTrade ${trade.id}: no Setup lineage (setupId is null), no chart context available.`,
+      );
+    } else {
+      await this.screenshotService.requestPostTradeScreenshot(trade.id).catch((err: unknown) => {
+        this.logger.warn(`Failed to request POST_TRADE screenshot for JournalTrade ${trade.id}: ${String(err)}`);
+      });
+    }
 
     return trade;
   }
