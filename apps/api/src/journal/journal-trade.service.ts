@@ -75,8 +75,6 @@ export class JournalTradeService {
       exitTimestamp: new Date(input.exitTimestamp),
       actualFees: input.actualFees ? new Decimal(input.actualFees) : null,
       actualSlippage: input.actualSlippage ? new Decimal(input.actualSlippage) : null,
-      mfe: input.mfe ? new Decimal(input.mfe) : null,
-      mae: input.mae ? new Decimal(input.mae) : null,
       exitNotes: input.exitNotes ?? null,
     });
 
