@@ -601,6 +601,22 @@ model RiskCalculation {
 // Distinct from BacktestTrade by design — see the model-level comment in
 // docs/trade-journal-design.md. Never populated by copying BacktestTrade
 // rows; packages/analytics normalizes both for cross-cutting queries.
+//
+// Tech-debt fix (Milestone 6 final review): migration
+// 20260923144150_add_journal_trade_active_decision_unique_index adds a
+// partial unique index — CREATE UNIQUE INDEX ... ON "JournalTrade"
+// ("setupId") WHERE "status" IN ('OPEN', 'PLANNED', 'SKIPPED') — enforcing
+// "at most one active/recorded decision per Setup" at the database level.
+// This is NOT expressible in Prisma's schema DSL (no WHERE-clause partial
+// index syntax as of Prisma 6), so it exists only in that migration's raw
+// SQL, not as an `@@index`/`@@unique` attribute below. Do not "clean this
+// up" by adding a plain (non-partial) `@@unique([setupId])` — that would be
+// a stricter, wrong invariant: it would also block a legitimate future
+// JournalTrade for a setup whose only prior trade is already CLOSED. See
+// findJournalTradeBySetupId in journal-trades.ts (the pre-existing
+// application-level check this constraint backs up) and setup.service.ts's
+// execute()/skip() for how a P2002 on this index should be translated to a
+// 409 at the API layer.
 model JournalTrade {
   id String @id @default(uuid())
 
