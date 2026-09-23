@@ -293,3 +293,36 @@ export type WebhookFailureCode = (typeof WEBHOOK_FAILURE_CODES)[number];
  */
 export const TRADINGVIEW_SIGNAL_TYPES = ["SETUP_CANDIDATE"] as const;
 export type TradingViewSignalType = (typeof TRADINGVIEW_SIGNAL_TYPES)[number];
+
+/**
+ * Milestone 6 — which Setup-lifecycle transitions can carry a Telegram (or
+ * console-mode) notification. See docs/notifications.md "Notification
+ * policy" for the default policy table (WATCH never notifies).
+ */
+export const NOTIFICATION_TYPES = [
+  "SETUP_PREPARE",
+  "SETUP_READY",
+  "SETUP_INVALIDATED",
+  "SETUP_EXPIRED",
+  "SETUP_REJECTED",
+] as const;
+export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
+
+export const NOTIFICATION_PROVIDER_TYPES = ["TELEGRAM", "CONSOLE"] as const;
+export type NotificationProviderType = (typeof NOTIFICATION_PROVIDER_TYPES)[number];
+
+/** Mirrors TradeScreenshot's REQUESTED->GENERATING->READY|FAILED shape, with an extra RETRYING state for a bounded-backoff temporary-failure retry in flight. */
+export const NOTIFICATION_DELIVERY_STATUSES = ["QUEUED", "SENDING", "SENT", "FAILED", "RETRYING"] as const;
+export type NotificationDeliveryStatus = (typeof NOTIFICATION_DELIVERY_STATUSES)[number];
+
+/** Optional reason recorded when a human chooses SKIP TRADE on a READY setup. Never auto-assigned. */
+export const SKIP_REASONS = [
+  "MISSED_ALERT",
+  "PRICE_MOVED",
+  "MANUAL_DISAGREEMENT",
+  "RISK_TOO_HIGH",
+  "BUSY",
+  "SETUP_NO_LONGER_VALID",
+  "OTHER",
+] as const;
+export type SkipReason = (typeof SKIP_REASONS)[number];

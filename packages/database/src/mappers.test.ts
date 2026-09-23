@@ -466,6 +466,8 @@ describe("mapJournalTrade", () => {
       status: "CLOSED",
       entryNotes: null,
       exitNotes: "Closed near target1.",
+      skipReason: null,
+      outcome: "WIN",
       createdAt: new Date("2024-02-03T08:00:00.000Z"),
       updatedAt: new Date("2024-02-03T15:00:00.000Z"),
     };
@@ -475,6 +477,8 @@ describe("mapJournalTrade", () => {
     expect(trade.netPnl?.toString()).toBe("1172.5");
     expect(trade.rMultiple?.toString()).toBe("1.8685259");
     expect(trade.status).toBe("CLOSED");
+    expect(trade.outcome).toBe("WIN");
+    expect(trade.skipReason).toBeNull();
   });
 
   it("maps a freshly-planned trade row with every post-entry field null", () => {
@@ -508,6 +512,8 @@ describe("mapJournalTrade", () => {
       status: "PLANNED",
       entryNotes: null,
       exitNotes: null,
+      skipReason: null,
+      outcome: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -517,6 +523,8 @@ describe("mapJournalTrade", () => {
     expect(trade.actualEntry).toBeNull();
     expect(trade.rMultiple).toBeNull();
     expect(trade.status).toBe("PLANNED");
+    expect(trade.skipReason).toBeNull();
+    expect(trade.outcome).toBeNull();
   });
 });
 

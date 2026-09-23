@@ -36,6 +36,7 @@ import type {
   ScreenshotType,
   SetupSource,
   SetupStatus,
+  SkipReason,
   StrategyVersionStatus,
   Timeframe,
   TradeExitReason,
@@ -561,6 +562,8 @@ export interface PrismaJournalTradeRow {
   status: JournalTradeStatus;
   entryNotes: string | null;
   exitNotes: string | null;
+  skipReason: SkipReason | null;
+  outcome: PostTradeOutcome | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -596,6 +599,8 @@ export function mapJournalTrade(row: PrismaJournalTradeRow): JournalTrade {
     status: row.status,
     entryNotes: row.entryNotes,
     exitNotes: row.exitNotes,
+    skipReason: row.skipReason,
+    outcome: row.outcome,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };

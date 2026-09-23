@@ -4,6 +4,7 @@ import {
   EXECUTION_MODES,
   SETUP_SOURCES,
   SETUP_STATUSES,
+  SKIP_REASONS,
   TIMEFRAMES,
 } from "./enums";
 
@@ -154,6 +155,7 @@ export const createJournalTradeSchema = z.object({
   plannedTarget2: positiveDecimalString("plannedTarget2").optional(),
   plannedRisk: nonNegativeDecimalString("plannedRisk").optional(),
   executionMode: z.enum(["PAPER", "MANUAL_LIVE", "SKIPPED"]),
+  skipReason: z.enum(SKIP_REASONS).optional(),
   entryNotes: z.string().trim().max(2000).optional(),
 });
 export type CreateJournalTradeInput = z.infer<typeof createJournalTradeSchema>;
@@ -172,8 +174,6 @@ export const closeJournalTradeSchema = z.object({
   exitTimestamp: z.string().datetime(),
   actualFees: nonNegativeDecimalString("actualFees").optional(),
   actualSlippage: nonNegativeDecimalString("actualSlippage").optional(),
-  mfe: nonNegativeDecimalString("mfe").optional(),
-  mae: nonNegativeDecimalString("mae").optional(),
   exitNotes: z.string().trim().max(2000).optional(),
 });
 export type CloseJournalTradeInput = z.infer<typeof closeJournalTradeSchema>;
