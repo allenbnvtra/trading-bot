@@ -1,15 +1,28 @@
+import type { Prisma } from "@prisma/client";
 import type { Timeframe } from "@trading-copilot/shared-types";
 import type { Candle } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
 import { mapCandle } from "../mappers";
+
+/**
+ * Any Prisma client-shaped object that supports `.candle.findMany` — the
+ * top-level `prisma` singleton or a `$transaction` callback's `tx` argument.
+ * Lets a caller (e.g. closeJournalTrade in journal-trades.ts) read candles
+ * inside the same transaction as the state change that depends on them,
+ * rather than reading through the module-level singleton and breaking that
+ * transaction's isolation boundary. Mirrors journal-events.ts's own
+ * `PrismaClientOrTx` pattern (same shape/role, different table).
+ */
+export type CandlePrismaClientOrTx = Pick<Prisma.TransactionClient, "candle">;
 
 export async function getCandles(
   instrumentId: string,
   timeframe: Timeframe,
   startDate: Date,
   endDate: Date,
+  client: CandlePrismaClientOrTx = prisma,
 ): Promise<Candle[]> {
-  const rows = await prisma.candle.findMany({
+  const rows = await client.candle.findMany({
     where: {
       instrumentId,
       timeframe,

@@ -223,11 +223,38 @@ export async function closeJournalTrade(id: string, input: CloseJournalTradeInpu
         include: { marketSnapshot: true },
       });
       if (setup) {
+        // A candle's `timestamp` is its OPEN time, and a real-world fill
+        // happens sometime DURING a candle's interval, not exactly at its
+        // open — `existing.entryTimestamp` (from a free-typed datetime-local
+        // dashboard input, essentially never aligned to a candle boundary)
+        // is almost always strictly inside the entry candle's interval, not
+        // equal to its timestamp. Querying candles with `gte:
+        // entryTimestamp` directly would therefore silently exclude the
+        // entry candle itself, understating mfe/mae for a multi-candle trade
+        // and producing a spurious null (masquerading as "no candle data
+        // available", the case the comment above legitimately covers) for a
+        // fast trade whose entry and exit both fall inside one candle.
+        // Resolve the range start to that containing candle's own timestamp
+        // instead. No equivalent fix is needed for the end boundary: a
+        // candle's open is always <= an exit that occurred inside it, and a
+        // later not-yet-happened candle is already correctly excluded by
+        // `lte: exitTimestamp`.
+        const entryCandle = await tx.candle.findFirst({
+          where: {
+            instrumentId: existing.instrumentId,
+            timeframe: setup.marketSnapshot.timeframe,
+            timestamp: { lte: existing.entryTimestamp },
+          },
+          orderBy: { timestamp: "desc" },
+        });
+        const rangeStart = entryCandle?.timestamp ?? existing.entryTimestamp;
+
         const candles = await getCandles(
           existing.instrumentId,
           setup.marketSnapshot.timeframe as Timeframe,
-          existing.entryTimestamp,
+          rangeStart,
           input.exitTimestamp,
+          tx,
         );
         if (candles.length > 0) {
           const excursions = calculateExcursions(

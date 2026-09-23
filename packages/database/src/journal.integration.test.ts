@@ -544,6 +544,257 @@ describe.skipIf(!process.env.DATABASE_URL)("journal pipeline (live Postgres)", (
     }
   });
 
+  /**
+   * Regression for the Milestone 6 final-review BLOCKER: closeJournalTrade
+   * used to query candles with `timestamp: { gte: entryTimestamp }`, but a
+   * candle's `timestamp` is its OPEN time and a real-world entry happens
+   * DURING a candle's interval, not exactly at its open. That silently
+   * dropped the entry candle from the mfe/mae computation whenever
+   * entryTimestamp wasn't exactly on a candle boundary — which a free-typed
+   * datetime-local dashboard input essentially never is. This test picks an
+   * entryTimestamp strictly BETWEEN two real candle timestamps and proves
+   * the candle that actually contains it is still included: mfe/mae reflect
+   * that first candle's high/low, not just the later candle's.
+   */
+  it("closeJournalTrade includes the candle containing entryTimestamp even when entryTimestamp is not on a candle boundary", async () => {
+    const instrument = await instrumentsRepository.findInstrumentBySymbolAndExchange("GENFUT1", "SIM-FUT");
+    expect(instrument).not.toBeNull();
+    if (!instrument) return;
+
+    const strategy = await prisma.strategy.findUnique({ where: { key: "ema-trend-pullback" } });
+    expect(strategy).not.toBeNull();
+    if (!strategy) return;
+
+    const strategyVersion = await prisma.strategyVersion.findUnique({
+      where: { strategyId_version: { strategyId: strategy.id, version: "1.0.0" } },
+    });
+    expect(strategyVersion).not.toBeNull();
+    if (!strategyVersion) return;
+
+    const timeframe = "5m";
+    const base = Date.now();
+    const candleATimestamp = new Date(base); // open time of the candle that CONTAINS entryTimestamp below
+    const candleBTimestamp = new Date(base + 5 * 60_000);
+    // Strictly inside candle A's interval, not aligned to any candle
+    // boundary — exactly the free-typed-datetime-local shape that triggered
+    // the bug.
+    const entryTimestamp = new Date(base + 2 * 60_000);
+    const exitTimestamp = new Date(base + 7 * 60_000); // inside candle B's interval
+
+    // SYNTHETIC TEST DATA — NOT REAL MARKET DATA. Candle A's high (108) and
+    // low (95) are deliberately far outside candle B's range (101-103), so
+    // if candle A were silently excluded the computed mfe/mae would come out
+    // wrong (from candle B alone) rather than merely imprecise.
+    await prisma.candle.createMany({
+      data: [
+        {
+          instrumentId: instrument.id,
+          timeframe,
+          timestamp: candleATimestamp,
+          open: "100",
+          high: "108",
+          low: "95",
+          close: "102",
+          volume: "10",
+        },
+        {
+          instrumentId: instrument.id,
+          timeframe,
+          timestamp: candleBTimestamp,
+          open: "102",
+          high: "103",
+          low: "101",
+          close: "102",
+          volume: "10",
+        },
+      ],
+    });
+
+    try {
+      const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+        instrumentId: instrument.id,
+        timestamp: candleATimestamp,
+        timeframe,
+        metadata: { integrationTest: true, purpose: "mfe-mae-boundary-regression" },
+      });
+
+      const plannedEntry = new Decimal("100");
+      const plannedStop = new Decimal("95");
+      const plannedTarget1 = new Decimal("110");
+
+      const setup = await setupsRepository.createSetup({
+        instrumentId: instrument.id,
+        strategyId: strategy.id,
+        strategyVersionId: strategyVersion.id,
+        marketSnapshotId: snapshot.id,
+        direction: "LONG",
+        source: "MANUAL_TEST",
+        plannedEntry,
+        plannedStop,
+        plannedTarget1,
+        metadata: { integrationTest: true },
+      });
+
+      let trade = await journalTradesRepository.createJournalTrade({
+        setupId: setup.id,
+        instrumentId: instrument.id,
+        strategyId: strategy.id,
+        strategyVersionId: strategyVersion.id,
+        direction: "LONG",
+        plannedEntry,
+        plannedStop,
+        plannedTarget1,
+        plannedRisk: new Decimal("5"),
+        executionMode: "PAPER",
+      });
+
+      const actualEntry = new Decimal("100");
+      trade = await journalTradesRepository.recordJournalTradeEntry(trade.id, {
+        actualEntry,
+        entryTimestamp,
+        quantity: 1,
+        estimatedFees: new Decimal("0"),
+        estimatedSlippage: new Decimal("0"),
+      });
+
+      trade = await journalTradesRepository.closeJournalTrade(trade.id, {
+        actualExit: new Decimal("102"),
+        exitTimestamp,
+        actualFees: new Decimal("0"),
+        actualSlippage: new Decimal("0"),
+      });
+      expect(trade.status).toBe("CLOSED");
+
+      // Reflects candle A's extremes (high 108 -> mfe 8, low 95 -> mae 5),
+      // proving candle A was fetched even though its timestamp (candleA) is
+      // strictly BEFORE entryTimestamp. If candle A had been silently
+      // dropped (the bug), mfe/mae would instead come from candle B alone
+      // (high 103 -> mfe 3).
+      expect(trade.mfe).not.toBeNull();
+      expect(trade.mae).not.toBeNull();
+      expect(trade.mfe!.toString()).toBe("8");
+      expect(trade.mae!.toString()).toBe("5");
+    } finally {
+      await prisma.candle.deleteMany({
+        where: { instrumentId: instrument.id, timeframe, timestamp: { gte: candleATimestamp, lte: candleBTimestamp } },
+      });
+    }
+  });
+
+  /**
+   * Regression for the same Milestone 6 BLOCKER, second failure mode: a fast
+   * trade whose entry AND exit both fall inside the same single candle used
+   * to get zero candles back from the old `gte: entryTimestamp` query
+   * (since the candle's open timestamp is always before an entryTimestamp
+   * that falls partway through it), storing mfe/mae as null — silently
+   * masquerading as the legitimate "no candle data available" case. This
+   * proves a real, non-null, correctly-computed mfe/mae comes back instead.
+   */
+  it("closeJournalTrade computes non-null mfe/mae for a fast trade whose entry and exit both fall inside one candle", async () => {
+    const instrument = await instrumentsRepository.findInstrumentBySymbolAndExchange("GENFUT1", "SIM-FUT");
+    expect(instrument).not.toBeNull();
+    if (!instrument) return;
+
+    const strategy = await prisma.strategy.findUnique({ where: { key: "ema-trend-pullback" } });
+    expect(strategy).not.toBeNull();
+    if (!strategy) return;
+
+    const strategyVersion = await prisma.strategyVersion.findUnique({
+      where: { strategyId_version: { strategyId: strategy.id, version: "1.0.0" } },
+    });
+    expect(strategyVersion).not.toBeNull();
+    if (!strategyVersion) return;
+
+    const timeframe = "5m";
+    const base = Date.now() + 60 * 60_000; // offset well clear of the sibling test's timestamps above
+    const candleTimestamp = new Date(base); // this candle's OPEN time
+    // Both entry and exit fall strictly inside this one candle's interval
+    // (candleTimestamp, candleTimestamp + 5m) — never aligned to the open.
+    const entryTimestamp = new Date(base + 60_000);
+    const exitTimestamp = new Date(base + 3 * 60_000);
+
+    // SYNTHETIC TEST DATA — NOT REAL MARKET DATA.
+    await prisma.candle.create({
+      data: {
+        instrumentId: instrument.id,
+        timeframe,
+        timestamp: candleTimestamp,
+        open: "100",
+        high: "105",
+        low: "97",
+        close: "102",
+        volume: "10",
+      },
+    });
+
+    try {
+      const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+        instrumentId: instrument.id,
+        timestamp: candleTimestamp,
+        timeframe,
+        metadata: { integrationTest: true, purpose: "mfe-mae-single-candle-regression" },
+      });
+
+      const plannedEntry = new Decimal("100");
+      const plannedStop = new Decimal("95");
+      const plannedTarget1 = new Decimal("110");
+
+      const setup = await setupsRepository.createSetup({
+        instrumentId: instrument.id,
+        strategyId: strategy.id,
+        strategyVersionId: strategyVersion.id,
+        marketSnapshotId: snapshot.id,
+        direction: "LONG",
+        source: "MANUAL_TEST",
+        plannedEntry,
+        plannedStop,
+        plannedTarget1,
+        metadata: { integrationTest: true },
+      });
+
+      let trade = await journalTradesRepository.createJournalTrade({
+        setupId: setup.id,
+        instrumentId: instrument.id,
+        strategyId: strategy.id,
+        strategyVersionId: strategyVersion.id,
+        direction: "LONG",
+        plannedEntry,
+        plannedStop,
+        plannedTarget1,
+        plannedRisk: new Decimal("5"),
+        executionMode: "PAPER",
+      });
+
+      const actualEntry = new Decimal("100");
+      trade = await journalTradesRepository.recordJournalTradeEntry(trade.id, {
+        actualEntry,
+        entryTimestamp,
+        quantity: 1,
+        estimatedFees: new Decimal("0"),
+        estimatedSlippage: new Decimal("0"),
+      });
+
+      trade = await journalTradesRepository.closeJournalTrade(trade.id, {
+        actualExit: new Decimal("102"),
+        exitTimestamp,
+        actualFees: new Decimal("0"),
+        actualSlippage: new Decimal("0"),
+      });
+      expect(trade.status).toBe("CLOSED");
+
+      // Not null (the bug produced null here) and reflects the single
+      // candle's own high/low (105 -> mfe 5, 97 -> mae 3).
+      expect(trade.mfe).not.toBeNull();
+      expect(trade.mae).not.toBeNull();
+      expect(trade.mfe!.toString()).toBe("5");
+      expect(trade.mae!.toString()).toBe("3");
+    } finally {
+      await prisma.candle.deleteMany({
+        where: { instrumentId: instrument.id, timeframe, timestamp: candleTimestamp },
+      });
+    }
+  });
+
   it("emits STRATEGY_VERSION_PROPOSED when a new StrategyVersion is created", async () => {
     const strategy = await prisma.strategy.findUnique({ where: { key: "ema-trend-pullback" } });
     expect(strategy).not.toBeNull();
