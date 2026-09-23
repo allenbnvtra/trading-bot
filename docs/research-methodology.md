@@ -65,12 +65,14 @@ A condition that is common among losing trades is not automatically a *cause* of
 ## Strategy lifecycle
 
 ```
-DISCOVERED → BACKTESTING → VALIDATION → OUT_OF_SAMPLE → WALK_FORWARD → PAPER_TRADING → APPROVED
+DISCOVERED → BACKTESTING → VALIDATION → OUT_OF_SAMPLE → WALK_FORWARD → PAPER_CANDIDATE → PAPER_TRADING → APPROVED
                                                                               ↓
                                                                     PAUSED / RETIRED
 ```
 
 A strategy change is always a new `StrategyVersion`. An approved historical version is never silently altered.
+
+**`PAPER_CANDIDATE`** (added in Milestone 7) sits between `WALK_FORWARD` and `PAPER_TRADING`. Every status through `WALK_FORWARD` can be reached automatically as a hypothesis's experiments complete; `PAPER_CANDIDATE` cannot: it requires an explicit, human-confirmed HTTP request (`confirmedByHuman: true`) and re-checks the sample-size guardrails above over the combined `FINAL_TEST`+`WALK_FORWARD` window. Nothing in this codebase can move a `StrategyVersion` past `WALK_FORWARD` without that human action, and nothing moves it past `PAPER_CANDIDATE` at all yet: `PAPER_TRADING`/`APPROVED` require paper-trading execution and monitoring infrastructure this milestone does not build. See `docs/ai-research.md` for the exact dataset-role pipeline (`RESEARCH → VALIDATION → FINAL_TEST → WALK_FORWARD`) and the final-test reuse safeguard's mechanism.
 
 ## How the Milestone 7 experiment pipeline enforces this
 

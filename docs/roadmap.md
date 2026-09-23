@@ -32,11 +32,19 @@ The candle cutoff enforced for every rendered chart (`timestamp <= cutoff`, with
 
 Outbound `Setup`-lifecycle notifications (`WATCH` never notifies, `PREPARE` gated behind `NOTIFICATION_PREPARE_ENABLED` (default off), `READY` always notifies, `INVALIDATED`/`EXPIRED`/`REJECTED` notify only if a prior `PREPARE`/`READY` notification actually reached a human), a `NotificationProvider` abstraction (Telegram, with a zero-credential console fallback so local development never needs real credentials), a durable idempotent `NotificationDelivery` record (database-unique-constraint-backed, one send per setup/notification-type/template-version), retry/backoff with TEMPORARY/PERMANENT failure classification, and a bounded wait to attach a `READY` setup's `PRE_TRADE` screenshot when one is available in time. Alongside it, the manual trade workflow those notifications exist to support: `POST /setups/:id/execute` (PAPER/MANUAL_LIVE, double-submit-guarded) and `POST /setups/:id/skip` (with an optional `SkipReason`), plus server-side-only MFE/MAE (`packages/risk-engine`'s `calculateExcursions` over real candles) and a server-derived `outcome` (`WIN`/`LOSS`/`BREAKEVEN`) at trade close - never client-supplied. See `docs/notifications.md` and the "Skip workflow" section of `docs/trade-journal-design.md`.
 
-*(This milestone's actual scope, drawn forward from what was originally planned as Milestone 9 - "Telegram/notification system" - differs from this roadmap's original Milestone 6 placeholder title, "AI Research Agent." That research-agent scope has not been built and remains future work; it is not renumbered here, to avoid a drive-by rename across every doc that cites a milestone number, following this file's own existing precedent for Milestone 3/4. See the Milestone 9 entry below.)*
+*(This milestone's actual scope, drawn forward from what was originally planned as Milestone 9 - "Telegram/notification system" - differs from this roadmap's original Milestone 6 placeholder title, "AI Research Agent." UPDATE: that research-agent scope was subsequently built, as Milestone 7 below, once its turn came up chronologically - the same forward-reference pattern the Milestone 9 entry below uses in the other direction, following this file's own existing precedent for Milestone 3/4.)*
 
-## Milestone 7 — Structure / Regime / Critic / Event agents
+## Milestone 7 - AI Research Agent + Experiment Framework (complete)
 
-Runtime application agents (not `.claude/agents`) producing structured, audited output.
+Historical journal data → deterministic statistics (`packages/analytics`) → a `ResearchAgent` (LLM, defaulting to a deterministic zero-network `MockAIProvider`) → a schema-validated structured hypothesis → a safe, closed DSL `StrategyDefinition` (never AI-generated code) → the existing deterministic backtester → a staged `RESEARCH → VALIDATION → FINAL_TEST → WALK_FORWARD` experiment pipeline with a database-enforced final-test-reuse safeguard → a human-gated `PAPER_CANDIDATE` `StrategyVersion` status. Full `AgentExecution` audit trail (provider/model/prompt-version/token/cost tracking, including for failed calls), a daily token budget that fails closed on misconfiguration, and dataset-window isolation between stages. See `docs/ai-research.md` and `docs/research-methodology.md`.
+
+The AI never calculates an authoritative P&L/risk number, never modifies an existing `StrategyVersion` in place, and cannot reach `PAPER_TRADING`/`APPROVED` - this milestone stops at `PAPER_CANDIDATE`, requiring an explicit human-confirmed action, with nothing wired to advance further automatically.
+
+*(This reuses the "Milestone 7" number by chronological shipping order - the seventh milestone completed, after 1/2/3/5/6 - matching how the codebase's own migrations/tests/docs already refer to it throughout. The roadmap's original placeholder title for slot 7, "Structure/Regime/Critic/Event agents," has NOT been built and remains future work; it is described in the next section, unnumbered, following this file's own precedent above of not renumbering later placeholders to keep a drive-by rename out of every doc that cites a milestone number.)*
+
+## Next planned milestone - Structure / Regime / Critic / Event agents (not started)
+
+Runtime application agents (not `.claude/agents`) producing structured, audited output. Explicitly not begun as part of Milestone 7 above, per that milestone's own closing instruction: building the AI Research Agent + Experiment Framework does not imply starting live agent work - that decision is made separately, when this milestone is actually taken up.
 
 ## Milestone 8 — Winner + Loss Analysis agents
 
@@ -44,7 +52,7 @@ Structured post-trade analysis, hypothesis-only output, never a direct live-stra
 
 ## Milestone 9 — Telegram/notification system
 
-**Superseded: this scope was built early, as Milestone 6 (see above) rather than in original numeric order.** WATCH/PREPARE/READY/INVALIDATED/EXPIRED notifications with full context; human executes manually. Kept here, unrenumbered, for the same reason Milestone 3/4's note gives: avoiding a drive-by rename across every doc that cites a milestone number. Whatever numeric-order Milestone 9 scope remains once Milestones 7/8 are built (an AI-research-agent-driven notification need, if any) will be scoped again at that time.
+**Superseded: this scope was built early, as Milestone 6 (see above) rather than in original numeric order.** WATCH/PREPARE/READY/INVALIDATED/EXPIRED notifications with full context; human executes manually. Kept here, unrenumbered, for the same reason Milestone 3/4's note gives: avoiding a drive-by rename across every doc that cites a milestone number. Whatever numeric-order Milestone 9 scope remains once the Structure/Regime/Critic/Event and Winner/Loss Analysis milestones are built will be scoped again at that time - the AI-research-agent-driven notification need this note originally anticipated is now covered by Milestone 7 (see above), which is complete.
 
 ## Milestone 10 — Read-only broker/account integration
 
@@ -53,6 +61,8 @@ Read-only only. No order placement, ever.
 ## Milestone 11 — Walk-forward + paper-trading approval pipeline
 
 Formal research → validation → out-of-sample → walk-forward → paper trading → approval pipeline (see `docs/research-methodology.md`).
+
+*(Milestone 7 built the dataset-role pipeline and stage-advancement foundation this describes - `RESEARCH → VALIDATION → FINAL_TEST → WALK_FORWARD`, with a database-enforced final-test-reuse safeguard and a human-gated `PAPER_CANDIDATE` transition - but explicitly stops there. Outcome-based (pass/fail) promotion criteria, the robustness checks `docs/research-methodology.md`'s "Overfitting and parameter mining" section requires, real paper-trading execution, and the `APPROVED` status remain this milestone's scope, not yet started. See `docs/ai-research.md`'s "Known limitations".)*
 
 ## Milestone 12 — 24/7 deployment and monitoring
 
