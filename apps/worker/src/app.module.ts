@@ -2,6 +2,8 @@ import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
 import {
   NOTIFICATION_QUEUE,
+  RESEARCH_AGENT_JOB_OPTIONS,
+  RESEARCH_AGENT_QUEUE,
   SCREENSHOT_QUEUE,
   SETUP_EXPIRATION_QUEUE,
   TRADINGVIEW_WEBHOOK_JOB_OPTIONS,
@@ -12,6 +14,7 @@ import { BACKTEST_RUN_QUEUE } from "./backtest-run/backtest-run.constants";
 import { BacktestRunProcessor } from "./backtest-run/backtest-run.processor";
 import { createRedisConnectionOptions } from "./common/redis-connection";
 import { NotificationSendProcessor, notificationProviderProvider } from "./notifications/notification-send.processor";
+import { AgentExecutionProcessor, aiProviderProvider } from "./research/agent-execution.processor";
 import { BrowserManager } from "./screenshot-generation/browser-manager";
 import { ScreenshotGenerationProcessor } from "./screenshot-generation/screenshot-generation.processor";
 import { screenshotStorageProvider } from "./screenshot-generation/screenshot-storage.provider";
@@ -79,6 +82,19 @@ import { WebhookReconciliationProcessor } from "./webhook-reconciliation/webhook
         backoff: { type: "exponential", delay: 5_000 },
       },
     }),
+    // attempts: 1, matches SCREENSHOT_QUEUE's deliberate policy: an LLM call
+    // is neither free nor safe to retry automatically (see
+    // RESEARCH_AGENT_JOB_OPTIONS's own doc comment in
+    // packages/shared-types/src/research.ts). AgentExecutionProcessor's
+    // catch block always marks the AgentExecution row FAILED and records an
+    // AGENT_FAILED journal event before rethrowing, so a failed job here
+    // never leaves the row silently stuck at RUNNING; a human retries via a
+    // fresh POST /research/hypotheses/generate rather than an automatic
+    // BullMQ retry storm re-calling the AI provider.
+    BullModule.registerQueue({
+      name: RESEARCH_AGENT_QUEUE,
+      defaultJobOptions: RESEARCH_AGENT_JOB_OPTIONS,
+    }),
   ],
   providers: [
     BacktestRunProcessor,
@@ -90,6 +106,8 @@ import { WebhookReconciliationProcessor } from "./webhook-reconciliation/webhook
     ScreenshotGenerationProcessor,
     notificationProviderProvider,
     NotificationSendProcessor,
+    aiProviderProvider,
+    AgentExecutionProcessor,
   ],
 })
 export class AppModule {}
