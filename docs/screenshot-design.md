@@ -31,9 +31,9 @@ served back through a controlled apps/api route, shown in the dashboard
 
 In both cases, generation is a best-effort side effect: a screenshot-subsystem failure never fails the state transition or the trade close it's attached to. The triggering service call is wrapped in `.catch()` and only logged.
 
-### Idempotency and immutability as database guarantees
+### Idempotency as a database guarantee; immutability as a convention
 
-Two `@@unique` constraints on `TradeScreenshot` are what actually enforce this, not application convention:
+Two `@@unique` constraints on `TradeScreenshot` are what actually enforce idempotency (no duplicate rows for the same target), not application convention:
 
 ```prisma
 @@unique([setupId, type, chartConfigVersion])
@@ -41,6 +41,8 @@ Two `@@unique` constraints on `TradeScreenshot` are what actually enforce this, 
 ```
 
 `requestOrRetryScreenshot` (`packages/database/src/repositories/trade-screenshots.ts`) is the idempotency boundary every caller goes through: a repeat request for the same `(setupId | tradeId+tradeSource, type, chartConfigVersion)` returns the existing row (`alreadyInFlight: true`) rather than creating a duplicate. Concurrent first-time requests race a `findFirst` then `create`, but the `@@unique` constraint is the real safety net — the loser's `create` throws `P2002` inside the transaction, and the loser re-reads and returns the winner's committed row instead of erroring or creating a second row. A change to rendering behavior bumps `CHART_CONFIG_VERSION` (`packages/shared-types/src/screenshot.ts`) and gets a brand-new row under the new version; an old row's `chartConfigVersion` is never rewritten.
+
+The `@@unique` constraints only prevent a *second row* from being created for the same target — they say nothing about an `UPDATE` on a row that already exists. Immutability of an already-`READY` row (its `storageKey`, `renderedAt`, `chartConfigVersion` never changing after the fact) is **not** a database-level guarantee here. It holds because no exposed code path ever issues an `UPDATE` against a `READY` row's own fields: the conditional `updateMany` guard described below only ever matches a row whose status is `REQUESTED` or `GENERATING`, so a `READY` row is structurally unreachable by `markScreenshotGenerating`/`markScreenshotReady`/`markScreenshotFailed`. This is the same convention-based pattern `JournalEvent` uses (see `docs/trade-journal-design.md`) — enforced by "no update function is exposed," not by a Postgres trigger, rule, or column-level restriction. A future script or admin tool that called `prisma.tradeScreenshot.update()` directly, bypassing `trade-screenshots.ts`, would not be stopped by the database.
 
 ### The atomic-`updateMany` concurrency fix
 
