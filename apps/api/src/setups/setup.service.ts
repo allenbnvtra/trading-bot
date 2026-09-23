@@ -210,16 +210,26 @@ export class SetupService {
     }
 
     // Idempotency guard against a double-submit (double-click, a retried
-    // HTTP request) against the same READY setup: the Setup's own status is
-    // deliberately never transitioned away from READY by execute() (that
-    // lifecycle stays orthogonal to "has a trade been recorded" — see this
-    // method's doc comment and skip()'s matching behavior), and
-    // JournalTrade.setupId has no unique constraint, so without this check a
-    // second call would silently create a second, independent OPEN
-    // JournalTrade for the same setup.
-    const existingOpenTrade = await journalTradesRepository.findOpenJournalTradeBySetupId(setupId);
-    if (existingOpenTrade) {
-      throw new ConflictException(`Setup ${setupId} already has an OPEN JournalTrade — cannot execute it again`);
+    // HTTP request) against the same READY setup, and against a
+    // contradictory decision recorded by the other action (skip() already
+    // ran for this Setup): the Setup's own status is deliberately never
+    // transitioned away from READY by execute() (that lifecycle stays
+    // orthogonal to "has a trade been recorded" — see this method's doc
+    // comment and skip()'s matching behavior), and JournalTrade.setupId has
+    // no unique constraint, so without this check a second call (or a call
+    // following a skip()) would silently create a second, independent
+    // JournalTrade for the same setup — leaving one Setup with both a
+    // SKIPPED and an OPEN/real trade on file. Matches ANY existing
+    // JournalTrade for this setup, not just OPEN ones, since a prior
+    // SKIPPED decision is just as final as a prior OPEN one. This remains an
+    // app-level check-then-act guard, not a true DB-level constraint — the
+    // same documented limitation tier as before, proportionate given this
+    // codebase has no automated caller of either endpoint.
+    const existingTrade = await journalTradesRepository.findJournalTradeBySetupId(setupId);
+    if (existingTrade) {
+      throw new ConflictException(
+        `Setup ${setupId} already has a recorded trade decision (execute or skip) — cannot execute it again`,
+      );
     }
 
     // estimatedTotalRisk (riskPerUnit * calculatedQuantity), not riskBudget
@@ -264,6 +274,20 @@ export class SetupService {
     if (setup.status !== "READY") {
       throw new ConflictException(`Setup ${setupId} is not READY — cannot record a skip against it`);
     }
+
+    // Mirrors execute()'s guard above: reject if this Setup already has ANY
+    // recorded trade decision (SKIPPED or otherwise), not just an OPEN one —
+    // a second skip() (double-click, a retried request) or an execute() that
+    // already ran for this Setup are both contradictory with skipping it.
+    // Same app-level check-then-act limitation as execute()'s guard, not a
+    // DB-level constraint.
+    const existingTrade = await journalTradesRepository.findJournalTradeBySetupId(setupId);
+    if (existingTrade) {
+      throw new ConflictException(
+        `Setup ${setupId} already has a recorded trade decision (execute or skip) — cannot skip it again`,
+      );
+    }
+
     return journalTradesRepository.createJournalTrade({
       setupId: setup.id,
       instrumentId: setup.instrumentId,

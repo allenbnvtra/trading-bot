@@ -63,6 +63,7 @@ export async function createJournalTrade(input: CreateJournalTradeInput): Promis
         instrumentId: row.instrumentId,
         strategyId: row.strategyId,
         strategyVersionId: row.strategyVersionId,
+        metadata: isSkipped ? { skipReason: input.skipReason ?? null } : undefined,
       },
       tx,
     );
@@ -113,6 +114,7 @@ export async function recordJournalTradeEntry(
         instrumentId: row.instrumentId,
         strategyId: row.strategyId,
         strategyVersionId: row.strategyVersionId,
+        metadata: { actualEntry: input.actualEntry.toString(), quantity: input.quantity },
       },
       tx,
     );
@@ -295,6 +297,7 @@ export async function closeJournalTrade(id: string, input: CloseJournalTradeInpu
         instrumentId: row.instrumentId,
         strategyId: row.strategyId,
         strategyVersionId: row.strategyVersionId,
+        metadata: { outcome, netPnl: netPnl.toString(), rMultiple: rMultiple?.toString() ?? null },
       },
       tx,
     );
@@ -309,18 +312,22 @@ export async function getJournalTrade(id: string): Promise<JournalTrade | null> 
 }
 
 /**
- * Used by SetupService.execute() to reject a double-submit (double-click, a
- * retried HTTP request) against the same READY Setup: JournalTrade.setupId
- * has no unique/one-per-setup constraint in the schema, and a Setup's own
- * status never transitions away from READY on execute (see execute()'s doc
- * comment), so without this check a second execute() call would silently
- * create a second, independent OPEN JournalTrade. Filters status: "OPEN"
- * directly in the query rather than fetching all trades for the setup and
- * filtering client-side.
+ * Used by SetupService.execute() and SetupService.skip() to reject a
+ * double-submit or a contradictory decision (double-click, a retried HTTP
+ * request, or execute()/skip() called against the same Setup in either
+ * order) against the same Setup: JournalTrade.setupId has no
+ * unique/one-per-setup constraint in the schema, and a Setup's own status
+ * never transitions away from READY on execute or skip (see execute()'s and
+ * skip()'s doc comments), so without this check a Setup could end up with
+ * two independent JournalTrade rows recording contradictory decisions (e.g.
+ * both a SKIPPED and an OPEN trade for the same setup). Deliberately matches
+ * ANY JournalTrade status here, not just OPEN — one recorded decision
+ * (executed or skipped) is final for a Setup, regardless of that trade's own
+ * later lifecycle (OPEN/CLOSED/SKIPPED).
  */
-export async function findOpenJournalTradeBySetupId(setupId: string): Promise<JournalTrade | null> {
+export async function findJournalTradeBySetupId(setupId: string): Promise<JournalTrade | null> {
   const row = await prisma.journalTrade.findFirst({
-    where: { setupId, status: "OPEN" },
+    where: { setupId },
   });
   return row ? mapJournalTrade(row) : null;
 }
@@ -429,6 +436,7 @@ export async function createAndRecordJournalTradeEntry(
         instrumentId: created.instrumentId,
         strategyId: created.strategyId,
         strategyVersionId: created.strategyVersionId,
+        metadata: { actualEntry: input.actualEntry.toString(), quantity: input.quantity },
       },
       tx,
     );
