@@ -4,6 +4,7 @@ import type { Queue } from "bullmq";
 import {
   backtestsRepository,
   instrumentsRepository,
+  journalEventsRepository,
   researchRepository,
   strategiesRepository,
   ResearchBudgetExceededError,
@@ -188,13 +189,25 @@ export class ResearchService {
       },
     });
 
-    return researchRepository.createResearchExperiment({
+    const experiment = await researchRepository.createResearchExperiment({
       hypothesisId,
       datasetRole: input.datasetRole,
       datasetWindowStart: new Date(input.datasetWindowStart),
       datasetWindowEnd: new Date(input.datasetWindowEnd),
       backtestId: backtest.id,
     });
+
+    await journalEventsRepository.createJournalEvent({
+      eventType: "RESEARCH_EXPERIMENT_CREATED",
+      entityType: "RESEARCH_EXPERIMENT",
+      entityId: experiment.id,
+      instrumentId: input.instrumentId,
+      strategyId: strategyVersion.strategyId,
+      strategyVersionId: strategyVersion.id,
+      metadata: { hypothesisId, datasetRole: experiment.datasetRole, backtestId: backtest.id },
+    });
+
+    return experiment;
   }
 
   /**

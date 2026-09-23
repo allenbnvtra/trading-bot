@@ -6,7 +6,16 @@ import type { EnrichedJournalTrade } from "@trading-copilot/analytics";
 import type { ResearchExperiment, StrategyVersion } from "@trading-copilot/trading-domain";
 import { ResearchService } from "./research.service";
 
-const { researchRepository, strategiesRepository } = vi.hoisted(() => ({
+const { researchRepository, strategiesRepository, journalEventsRepository, instrumentsRepository, backtestsRepository } = vi.hoisted(() => ({
+  journalEventsRepository: {
+    createJournalEvent: vi.fn(),
+  },
+  instrumentsRepository: {
+    getInstrument: vi.fn(),
+  },
+  backtestsRepository: {
+    createBacktest: vi.fn(),
+  },
   researchRepository: {
     getTodayResearchSpend: vi.fn(),
     createAgentExecution: vi.fn(),
@@ -31,7 +40,14 @@ const { researchRepository, strategiesRepository } = vi.hoisted(() => ({
 // module-level imports, never constructor parameters.
 vi.mock("@trading-copilot/database", async () => {
   const actual = await vi.importActual<typeof import("@trading-copilot/database")>("@trading-copilot/database");
-  return { ...actual, researchRepository, strategiesRepository };
+  return {
+    ...actual,
+    researchRepository,
+    strategiesRepository,
+    journalEventsRepository,
+    instrumentsRepository,
+    backtestsRepository,
+  };
 });
 
 const RESEARCH_DAILY_TOKEN_BUDGET_ENV = "RESEARCH_DAILY_TOKEN_BUDGET";
@@ -127,6 +143,70 @@ function makeMatureTradeSet(): EnrichedJournalTrade[] {
     });
   });
 }
+
+describe("ResearchService.createExperiment", () => {
+  let service: ResearchService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new ResearchService({ add: vi.fn() } as never);
+  });
+
+  it("records a RESEARCH_EXPERIMENT_CREATED journal event for the persisted experiment", async () => {
+    researchRepository.getResearchHypothesis.mockResolvedValue({ id: "hypothesis-1" });
+    instrumentsRepository.getInstrument.mockResolvedValue({ commissionPerContract: new Decimal("2.5") });
+    strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(makeStrategyVersion());
+    backtestsRepository.createBacktest.mockResolvedValue({ id: "backtest-1" });
+    researchRepository.createResearchExperiment.mockResolvedValue(
+      makeExperiment({ id: "experiment-new", datasetRole: "RESEARCH", status: "QUEUED", completedAt: null }),
+    );
+
+    const experiment = await service.createExperiment("hypothesis-1", {
+      datasetRole: "RESEARCH",
+      instrumentId: "instrument-1",
+      timeframe: "5m",
+      datasetWindowStart: "2025-11-01T00:00:00.000Z",
+      datasetWindowEnd: "2025-12-01T00:00:00.000Z",
+      slippageTicks: 1,
+      riskPercentage: "1",
+      initialBalance: "100000",
+    } as never);
+
+    expect(experiment.id).toBe("experiment-new");
+    expect(journalEventsRepository.createJournalEvent).toHaveBeenCalledTimes(1);
+    expect(journalEventsRepository.createJournalEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "RESEARCH_EXPERIMENT_CREATED",
+        entityType: "RESEARCH_EXPERIMENT",
+        entityId: "experiment-new",
+        strategyVersionId: "strategy-version-1",
+        metadata: expect.objectContaining({ hypothesisId: "hypothesis-1", datasetRole: "RESEARCH", backtestId: "backtest-1" }),
+      }),
+    );
+  });
+
+  it("records no journal event when the experiment insert itself fails", async () => {
+    researchRepository.getResearchHypothesis.mockResolvedValue({ id: "hypothesis-1" });
+    instrumentsRepository.getInstrument.mockResolvedValue({ commissionPerContract: new Decimal("2.5") });
+    strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(makeStrategyVersion());
+    backtestsRepository.createBacktest.mockResolvedValue({ id: "backtest-1" });
+    researchRepository.createResearchExperiment.mockRejectedValue(new Error("stage order"));
+
+    await expect(
+      service.createExperiment("hypothesis-1", {
+        datasetRole: "RESEARCH",
+        instrumentId: "instrument-1",
+        timeframe: "5m",
+        datasetWindowStart: "2025-11-01T00:00:00.000Z",
+        datasetWindowEnd: "2025-12-01T00:00:00.000Z",
+        slippageTicks: 1,
+        riskPercentage: "1",
+        initialBalance: "100000",
+      } as never),
+    ).rejects.toThrow("stage order");
+    expect(journalEventsRepository.createJournalEvent).not.toHaveBeenCalled();
+  });
+});
 
 describe("ResearchService.markPaperCandidate", () => {
   let service: ResearchService;
