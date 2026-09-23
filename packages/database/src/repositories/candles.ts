@@ -49,3 +49,30 @@ export async function getSurroundingCandles(
   const merged = [...before].reverse().concat(atOrAfter);
   return merged.map(mapCandle);
 }
+
+/**
+ * The anti-look-ahead-safe candle query for chart rendering
+ * (docs/screenshot-design.md). `cutoffTimestamp` must be an authoritative
+ * decision-time timestamp — MarketSnapshot.timestamp for a PRE_TRADE
+ * render, JournalTrade.exitTimestamp for POST_TRADE — never `new Date()`.
+ * The `timestamp: { lte: cutoffTimestamp }` clause is enforced by
+ * PostgreSQL itself, not filtered out of a larger result set in
+ * application code: a future candle is never even fetched, let alone
+ * rendered and merely hidden. `count` candles ending at or before the
+ * cutoff are returned oldest-first (matching getCandles' existing
+ * convention), so a candle exactly at the cutoff is included and a candle
+ * even 1ms after it is excluded.
+ */
+export async function getCandlesUpToTimestamp(
+  instrumentId: string,
+  timeframe: Timeframe,
+  cutoffTimestamp: Date,
+  count: number,
+): Promise<Candle[]> {
+  const rows = await prisma.candle.findMany({
+    where: { instrumentId, timeframe, timestamp: { lte: cutoffTimestamp } },
+    orderBy: { timestamp: "desc" },
+    take: count,
+  });
+  return rows.reverse().map(mapCandle);
+}
