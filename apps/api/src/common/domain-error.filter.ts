@@ -1,8 +1,11 @@
 import { ArgumentsHost, Catch, ConflictException, type ExceptionFilter, NotFoundException } from "@nestjs/common";
 import {
+  FinalTestAlreadySpentError,
   JournalTradeActiveDecisionConflictError,
   JournalTradeStateError,
   NotFoundError,
+  ResearchBudgetExceededError,
+  ResearchStageOrderError,
   SetupIncompletePlanError,
   SetupTransitionError,
 } from "@trading-copilot/database";
@@ -25,6 +28,12 @@ import type { Response } from "express";
  * JournalTradeService.create, the manual journal-trade endpoint), so a
  * genuine constraint violation there still becomes a clean 409 rather than
  * an unhandled 500.
+ *
+ * FinalTestAlreadySpentError, ResearchStageOrderError, and
+ * ResearchBudgetExceededError (Milestone 7, see
+ * packages/database/src/errors.ts) are all raised from
+ * researchRepository.createResearchExperiment and ResearchService, and
+ * likewise translate to a 409 with the error's own message.
  */
 @Catch(
   NotFoundError,
@@ -32,6 +41,9 @@ import type { Response } from "express";
   JournalTradeStateError,
   SetupIncompletePlanError,
   JournalTradeActiveDecisionConflictError,
+  FinalTestAlreadySpentError,
+  ResearchStageOrderError,
+  ResearchBudgetExceededError,
 )
 export class DomainErrorFilter implements ExceptionFilter {
   catch(
@@ -40,7 +52,10 @@ export class DomainErrorFilter implements ExceptionFilter {
       | SetupTransitionError
       | JournalTradeStateError
       | SetupIncompletePlanError
-      | JournalTradeActiveDecisionConflictError,
+      | JournalTradeActiveDecisionConflictError
+      | FinalTestAlreadySpentError
+      | ResearchStageOrderError
+      | ResearchBudgetExceededError,
     host: ArgumentsHost,
   ): void {
     const httpException =

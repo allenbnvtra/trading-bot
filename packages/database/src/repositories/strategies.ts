@@ -19,6 +19,18 @@ export async function listStrategies(): Promise<Strategy[]> {
   return rows.map(mapStrategy);
 }
 
+/**
+ * Milestone 7: looks up the Container Strategy every AI-proposed
+ * StrategyDefinition is versioned under (see ResearchService.createExperiment
+ * and docs/ai-research.md). Returns null rather than throwing so the caller
+ * can decide to create it on a cache miss, mirroring
+ * findStrategyVersionByKeyAndVersion's null-on-miss convention below.
+ */
+export async function getStrategyByKey(key: string): Promise<Strategy | null> {
+  const row = await prisma.strategy.findUnique({ where: { key } });
+  return row ? mapStrategy(row) : null;
+}
+
 export interface StrategyWithVersions extends Strategy {
   versions: StrategyVersion[];
 }
@@ -92,6 +104,13 @@ export async function createStrategyVersion(input: {
   description: string;
   parameters: Record<string, unknown>;
   status: StrategyVersionStatus;
+  /**
+   * Milestone 7: set only when this version originates from an AI-proposed
+   * ResearchHypothesis (see the model-level comment on StrategyVersion in
+   * prisma/schema.prisma). Every hand-authored version omits this and stays
+   * null, exactly as before Milestone 7.
+   */
+  sourceHypothesisId?: string;
 }): Promise<StrategyVersion> {
   return prisma.$transaction(async (tx) => {
     const row = await tx.strategyVersion.create({
@@ -102,6 +121,7 @@ export async function createStrategyVersion(input: {
         description: input.description,
         parameters: input.parameters as Prisma.InputJsonValue,
         status: input.status,
+        sourceHypothesisId: input.sourceHypothesisId ?? null,
       },
     });
 
@@ -113,6 +133,78 @@ export async function createStrategyVersion(input: {
         correlationId: row.id,
         strategyId: row.strategyId,
         strategyVersionId: row.id,
+      },
+      tx,
+    );
+
+    return mapStrategyVersion(row);
+  });
+}
+
+/**
+ * Milestone 7: looks up the StrategyVersion a hypothesis has already had
+ * created for it (see ResearchService.createExperiment), so a hypothesis
+ * with multiple experiment stages (RESEARCH -> VALIDATION -> FINAL_TEST ->
+ * WALK_FORWARD) reuses the exact same StrategyVersion across every stage
+ * rather than getting a fresh, redundant row per experiment. A hypothesis
+ * can have at most one StrategyVersion in practice (createExperiment only
+ * creates one on a cache miss), but this queries the oldest match
+ * defensively rather than assuming that invariant holds.
+ */
+export async function findStrategyVersionBySourceHypothesis(
+  hypothesisId: string,
+): Promise<StrategyVersion | null> {
+  const row = await prisma.strategyVersion.findFirst({
+    where: { sourceHypothesisId: hypothesisId },
+    orderBy: { createdAt: "asc" },
+  });
+  return row ? mapStrategyVersion(row) : null;
+}
+
+/**
+ * Milestone 7: the only way a StrategyVersion's status ever changes after
+ * creation (see the "immutable once created" comment on createStrategyVersion
+ * above; this changes `status` only, never `parameters`/`version`/etc.).
+ * Human-triggered only, via ResearchService.markPaperCandidate: see
+ * markPaperCandidateRequestSchema's `confirmedByHuman: true` literal and
+ * CLAUDE.md's "AI must never directly modify an approved strategy" rule.
+ * This function only ever transitions WALK_FORWARD -> PAPER_CANDIDATE, never
+ * touches anything already APPROVED/PAPER_TRADING/live, and is never called
+ * except from that one human-gated endpoint.
+ *
+ * Guarded with an atomic conditional `updateMany` rather than a
+ * `findUnique`-then-`update`, exactly like journal-trades.ts's
+ * closeJournalTrade (see its comment for the full race-condition
+ * explanation): a stale pre-transaction status read cannot be trusted to
+ * still hold true by the time an `update` runs, so two concurrent calls
+ * could otherwise both believe the version is WALK_FORWARD and both
+ * "succeed". `updateMany`'s `where` is re-evaluated against the row's
+ * currently-committed state at execution time, so only one concurrent call
+ * can ever match. Returns null on a miss (nonexistent id, or status is not
+ * currently WALK_FORWARD); the caller (ResearchService) turns that into a
+ * 409, never a silent no-op.
+ */
+export async function markPaperCandidate(id: string): Promise<StrategyVersion | null> {
+  return prisma.$transaction(async (tx) => {
+    const result = await tx.strategyVersion.updateMany({
+      where: { id, status: "WALK_FORWARD" },
+      data: { status: "PAPER_CANDIDATE" },
+    });
+    if (result.count === 0) {
+      return null;
+    }
+
+    const row = await tx.strategyVersion.findUniqueOrThrow({ where: { id } });
+
+    await createJournalEvent(
+      {
+        eventType: "STRATEGY_VERSION_STATUS_CHANGED",
+        entityType: "STRATEGY_VERSION",
+        entityId: row.id,
+        correlationId: row.id,
+        strategyId: row.strategyId,
+        strategyVersionId: row.id,
+        metadata: { from: "WALK_FORWARD", to: "PAPER_CANDIDATE" },
       },
       tx,
     );
