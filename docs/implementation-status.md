@@ -115,7 +115,17 @@ All fixes independently re-reviewed (three separate review rounds, one per fix w
 
 ## Remaining
 
-(none currently outstanding for Milestones 1, 2, 3, 5, 6, or 7; see `docs/roadmap.md` for what's next, the "Structure/Regime/Critic/Event agents" milestone, explicitly NOT started, per Milestone 7's own closing instruction not to begin live agent work automatically. There is no separate "Milestone 4," see `docs/roadmap.md`'s note. Milestone 7 is complete on branch `milestone-7-work` and has not yet been merged to `main` as of this writing.)
+(none currently outstanding for Milestones 1, 2, 3, 5, 6, or 7. Milestone 7 is merged to `main` (PR #1, fast-forward, `7e4d2a5`); all four quality gates independently re-run clean on `main` post-merge. There is no separate "Milestone 4," see `docs/roadmap.md`'s note. Three parallel workstreams are now in progress toward the roadmap's "Structure/Regime/Critic/Event agents" milestone and beyond, see "Parallel workstream status" below.)
+
+## Parallel workstream status
+
+Per an explicit user authorization to parallelize remaining development across isolated git worktrees/branches rather than serialize every milestone, three workstreams are proceeding concurrently, each in its own worktree, with the controller (this session) owning architecture consistency, shared-contract freezing, migration ordering, and integration. Status legend: planned → in progress → integration ready → merged.
+
+- **LIVE AGENTS** (worktree `.worktrees/milestone-8-live-agents`, branch `milestone-8-live-agents-work`): **planned** (implementation plan being written). Targets the roadmap's "Structure/Regime/Critic/Event agents" placeholder: `StructureAgent`/`RegimeAgent`/`EventAgent`/`CriticAgent`, a deterministic (non-LLM) Supervisor, fail-closed behavior, BullMQ orchestration, dashboard integration, paper-mode-first default. This workstream owns and will land the shared contracts (`AgentExecution`-equivalent persistence generalization, agent result envelope, `SupervisorDecision`, `systemDecision`/`humanDecision`) other workstreams depend on; the controller will fast-track just that contract-freeze slice to `main` before Workstream B's contract-dependent tasks begin.
+- **AGENT ANALYTICS** (worktree `.worktrees/agent-analytics`, branch `feat/agent-analytics`): **planned** (implementation plan being written, explicitly scoped to a contract-independent first phase: Winner/Loss analysis, rejected/skipped counterfactual analytics, outcome attribution, setup-vs-trade conversion, all buildable from data that already exists on `main` today, with agent-value analytics and system-vs-human decision comparison held in a separate, clearly-marked phase pending Workstream A's contract freeze).
+- **PRODUCTION INFRA** (worktree `.worktrees/production-infra`, branch `feat/production-infra`): **planned** (implementation plan being written). Fully independent of the other two, no trading-domain changes. Docker production config, reverse proxy/TLS, Postgres/Redis/screenshot-storage persistence, backup/restore, container health/restart policy, log/disk/memory monitoring, worker/queue health, deployment scripts, CI (this project has none today), safe migration procedure, production `.env.example`, secret-handling documentation.
+
+Database migrations are the explicit coordination boundary across these three: only Workstream A is expected to need new Prisma migrations for now (the new agent-persistence model); Workstream B's first phase needs none; Workstream C should need none at all. Migrations are never merged blindly in parallel; the controller inspects generated SQL and ordering before any workstream's schema change lands on `main`.
 
 ## Known limitations (Milestone 7)
 
