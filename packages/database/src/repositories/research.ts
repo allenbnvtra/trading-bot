@@ -10,8 +10,10 @@ import type {
   ResearchHypothesis,
 } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
-import { FinalTestAlreadySpentError, ResearchStageOrderError } from "../errors";
+import { FinalTestAlreadySpentError, NotFoundError, ResearchStageOrderError } from "../errors";
 import { mapAgentExecution, mapJournalTrade, mapMarketSnapshot, mapResearchExperiment, mapResearchHypothesis } from "../mappers";
+import { createBacktest, type CreateBacktestInput } from "./backtests";
+import { createJournalEvent } from "./journal-events";
 
 const DATASET_ROLE_ORDER: ResearchDatasetRole[] = ["RESEARCH", "VALIDATION", "FINAL_TEST", "WALK_FORWARD"];
 
@@ -142,47 +144,171 @@ async function listResearchHypotheses(): Promise<ResearchHypothesis[]> {
   return rows.map(mapResearchHypothesis);
 }
 
+/** Anything that can run the precondition reads: the prisma singleton or a `$transaction` callback's `tx`. */
+type ResearchPreconditionClient = Pick<Prisma.TransactionClient, "researchExperiment" | "researchHypothesis">;
+
+/** Dataset roles whose window must also start at or after the data that generated the hypothesis. */
+const HOLDOUT_GUARDED_ROLES: ReadonlySet<ResearchDatasetRole> = new Set(["FINAL_TEST", "WALK_FORWARD"]);
+
+/** The non-terminal experiment statuses a lifecycle transition may start from. */
+const ACTIVE_EXPERIMENT_STATUSES = ["QUEUED", "RUNNING"] as const;
+
+export interface ResearchExperimentPreconditionInput {
+  hypothesisId: string;
+  datasetRole: ResearchDatasetRole;
+  datasetWindowStart: Date;
+  datasetWindowEnd: Date;
+}
+
 /**
- * Enforces dataset-role stage ordering (RESEARCH -> VALIDATION -> FINAL_TEST
- * -> WALK_FORWARD, each requiring a prior-stage COMPLETED experiment) and
- * relies on the partial unique index from the Task 1 migration for the
- * final-test reuse safeguard, translating its P2002 into a typed
- * FinalTestAlreadySpentError rather than letting a raw Prisma error escape.
+ * Reads `sourceDataSummary.sampleWindowEnd` (an ISO string after the JSON
+ * round-trip; see buildResearchDataSummary in packages/analytics). Returns
+ * null when absent or null (a zero-trade hypothesis, or a summary written
+ * without the field), meaning there is nothing to guard against. Fails
+ * closed on a present-but-unparseable value rather than silently skipping
+ * the holdout check.
+ */
+function extractSampleWindowEnd(hypothesisId: string, role: ResearchDatasetRole, summary: Prisma.JsonValue): Date | null {
+  if (summary === null || typeof summary !== "object" || Array.isArray(summary)) {
+    return null;
+  }
+  const raw = (summary as Prisma.JsonObject).sampleWindowEnd;
+  if (raw === undefined || raw === null) {
+    return null;
+  }
+  const parsed = typeof raw === "string" ? new Date(raw) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) {
+    throw new ResearchStageOrderError(
+      hypothesisId,
+      role,
+      `hypothesis sourceDataSummary.sampleWindowEnd is not a valid ISO date (${JSON.stringify(raw)}), cannot verify the holdout window`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Every precondition for creating a ResearchExperiment, as read-only
+ * checks. Runs twice on the real path: once from ResearchService before
+ * any row is written (fast-fail, so a rejected request creates nothing,
+ * not even the hypothesis's StrategyVersion), and again inside
+ * createResearchExperiment's transaction (authoritative). All rejections
+ * are ResearchStageOrderError (409):
+ *
+ * 1. Well-formed window: datasetWindowEnd must be after datasetWindowStart
+ *    (also validated at the HTTP boundary; repeated here because check 3
+ *    depends on it).
+ * 2. Stage order (RESEARCH -> VALIDATION -> FINAL_TEST -> WALK_FORWARD):
+ *    the immediately-prior role must have a COMPLETED experiment.
+ * 3. Window isolation (docs/research-methodology.md, "each stage uses data
+ *    the previous stage did not"): for any role after RESEARCH, the new
+ *    window must start at or after the latest datasetWindowEnd of every
+ *    non-FAILED experiment of this hypothesis, any role. FAILED rows are
+ *    excluded because their data never produced a result that shaped the
+ *    hypothesis's progression.
+ * 4. Holdout (FINAL_TEST/WALK_FORWARD only): the window must start at or
+ *    after the hypothesis's sourceDataSummary.sampleWindowEnd, i.e. after
+ *    the journal data the hypothesis itself was generated from. Skipped
+ *    when that value is null (zero-trade hypothesis).
+ */
+async function assertResearchExperimentPreconditions(
+  input: ResearchExperimentPreconditionInput,
+  client: ResearchPreconditionClient = prisma,
+): Promise<void> {
+  const { hypothesisId, datasetRole } = input;
+
+  if (input.datasetWindowEnd.getTime() <= input.datasetWindowStart.getTime()) {
+    throw new ResearchStageOrderError(hypothesisId, datasetRole, "datasetWindowEnd must be after datasetWindowStart");
+  }
+
+  const roleIndex = DATASET_ROLE_ORDER.indexOf(datasetRole);
+  if (roleIndex > 0) {
+    const priorRole = DATASET_ROLE_ORDER[roleIndex - 1]!;
+    const priorCompleted = await client.researchExperiment.findFirst({
+      where: { hypothesisId, datasetRole: priorRole, status: "COMPLETED" },
+    });
+    if (!priorCompleted) {
+      throw new ResearchStageOrderError(
+        hypothesisId,
+        datasetRole,
+        `no COMPLETED ${priorRole} experiment exists yet for this hypothesis`,
+      );
+    }
+
+    const latest = await client.researchExperiment.aggregate({
+      where: { hypothesisId, status: { not: "FAILED" } },
+      _max: { datasetWindowEnd: true },
+    });
+    const latestEnd = latest._max.datasetWindowEnd;
+    if (latestEnd && input.datasetWindowStart.getTime() < latestEnd.getTime()) {
+      throw new ResearchStageOrderError(
+        hypothesisId,
+        datasetRole,
+        `dataset window must not overlap an earlier stage: datasetWindowStart ${input.datasetWindowStart.toISOString()} ` +
+          `is before the latest non-FAILED experiment window end ${latestEnd.toISOString()} for this hypothesis`,
+      );
+    }
+  }
+
+  if (HOLDOUT_GUARDED_ROLES.has(datasetRole)) {
+    const hypothesis = await client.researchHypothesis.findUnique({
+      where: { id: hypothesisId },
+      select: { sourceDataSummary: true },
+    });
+    if (!hypothesis) {
+      throw new NotFoundError("ResearchHypothesis", hypothesisId);
+    }
+    const sampleWindowEnd = extractSampleWindowEnd(hypothesisId, datasetRole, hypothesis.sourceDataSummary);
+    if (sampleWindowEnd && input.datasetWindowStart.getTime() < sampleWindowEnd.getTime()) {
+      throw new ResearchStageOrderError(
+        hypothesisId,
+        datasetRole,
+        `${datasetRole} window must be out-of-sample relative to the data that generated this hypothesis: ` +
+          `datasetWindowStart ${input.datasetWindowStart.toISOString()} is before the hypothesis's ` +
+          `sourceDataSummary.sampleWindowEnd ${sampleWindowEnd.toISOString()}`,
+      );
+    }
+  }
+}
+
+/**
+ * Creates a ResearchExperiment (status QUEUED) and, when `backtest` is
+ * given, the Backtest it runs, in ONE transaction: every precondition in
+ * assertResearchExperimentPreconditions is re-checked inside it, and the
+ * final-test reuse safeguard (the partial unique index, P2002 translated to
+ * FinalTestAlreadySpentError) fires on the experiment insert. Any rejection
+ * therefore rolls back the Backtest too, so no orphan Backtest row is ever
+ * left behind (the MEDIUM-6 finding from the Milestone 7 final review).
+ * The caller enqueues the backtest job only after this commits.
+ *
+ * `backtest` is optional only so repository-level tests can exercise the
+ * stage logic without a Backtest; ResearchService always passes it.
  */
 async function createResearchExperiment(input: {
   hypothesisId: string;
   datasetRole: ResearchDatasetRole;
   datasetWindowStart: Date;
   datasetWindowEnd: Date;
-  backtestId?: string;
+  backtest?: CreateBacktestInput;
 }): Promise<ResearchExperiment> {
-  const roleIndex = DATASET_ROLE_ORDER.indexOf(input.datasetRole);
-  if (roleIndex > 0) {
-    const priorRole = DATASET_ROLE_ORDER[roleIndex - 1]!;
-    const priorCompleted = await prisma.researchExperiment.findFirst({
-      where: { hypothesisId: input.hypothesisId, datasetRole: priorRole, status: "COMPLETED" },
-    });
-    if (!priorCompleted) {
-      throw new ResearchStageOrderError(
-        input.hypothesisId,
-        input.datasetRole,
-        `no COMPLETED ${priorRole} experiment exists yet for this hypothesis`,
-      );
-    }
-  }
-
   try {
-    const row = await prisma.researchExperiment.create({
-      data: {
-        hypothesisId: input.hypothesisId,
-        datasetRole: input.datasetRole,
-        datasetWindowStart: input.datasetWindowStart,
-        datasetWindowEnd: input.datasetWindowEnd,
-        backtestId: input.backtestId ?? null,
-        status: "QUEUED",
-      },
+    return await prisma.$transaction(async (tx) => {
+      await assertResearchExperimentPreconditions(input, tx);
+
+      const backtest = input.backtest ? await createBacktest(input.backtest, tx) : null;
+
+      const row = await tx.researchExperiment.create({
+        data: {
+          hypothesisId: input.hypothesisId,
+          datasetRole: input.datasetRole,
+          datasetWindowStart: input.datasetWindowStart,
+          datasetWindowEnd: input.datasetWindowEnd,
+          backtestId: backtest?.id ?? null,
+          status: "QUEUED",
+        },
+      });
+      return mapResearchExperiment(row);
     });
-    return mapResearchExperiment(row);
   } catch (error) {
     if (isUniqueConstraintViolation(error, ["hypothesisId"])) {
       throw new FinalTestAlreadySpentError(input.hypothesisId);
@@ -191,20 +317,128 @@ async function createResearchExperiment(input: {
   }
 }
 
-async function markResearchExperimentCompleted(id: string, backtestId: string): Promise<ResearchExperiment> {
-  const row = await prisma.researchExperiment.update({
-    where: { id },
-    data: { status: "COMPLETED", backtestId, completedAt: new Date() },
+/**
+ * The only ResearchExperiment a research-originated Backtest belongs to
+ * (ResearchExperiment.backtestId is unique). A Backtest created outside the
+ * research flow (POST /backtests) has none, so this returns null for it.
+ */
+async function getResearchExperimentByBacktestId(backtestId: string): Promise<ResearchExperiment | null> {
+  const row = await prisma.researchExperiment.findUnique({ where: { backtestId } });
+  return row ? mapResearchExperiment(row) : null;
+}
+
+/**
+ * QUEUED -> RUNNING, atomic (conditional updateMany). Returns null on a miss
+ * (already RUNNING, or already terminal), which is not an error: a retried
+ * or re-delivered backtest job simply finds it already past QUEUED.
+ */
+async function markResearchExperimentRunning(id: string): Promise<ResearchExperiment | null> {
+  const result = await prisma.researchExperiment.updateMany({
+    where: { id, status: "QUEUED" },
+    data: { status: "RUNNING" },
   });
+  if (result.count === 0) {
+    return null;
+  }
+  const row = await prisma.researchExperiment.findUniqueOrThrow({ where: { id } });
   return mapResearchExperiment(row);
 }
 
-async function markResearchExperimentFailed(id: string, failureReason: string): Promise<ResearchExperiment> {
-  const row = await prisma.researchExperiment.update({
-    where: { id },
-    data: { status: "FAILED", failureReason, completedAt: new Date() },
+/** Journal-event context (instrument/strategy ids) for an experiment's linked Backtest, if any. */
+async function experimentEventContext(
+  tx: Prisma.TransactionClient,
+  backtestId: string | null,
+): Promise<{ instrumentId: string | null; strategyId: string | null; strategyVersionId: string | null }> {
+  if (!backtestId) {
+    return { instrumentId: null, strategyId: null, strategyVersionId: null };
+  }
+  const backtest = await tx.backtest.findUnique({
+    where: { id: backtestId },
+    select: { instrumentId: true, strategyVersionId: true, strategyVersion: { select: { strategyId: true } } },
   });
-  return mapResearchExperiment(row);
+  return {
+    instrumentId: backtest?.instrumentId ?? null,
+    strategyId: backtest?.strategyVersion.strategyId ?? null,
+    strategyVersionId: backtest?.strategyVersionId ?? null,
+  };
+}
+
+/**
+ * QUEUED/RUNNING -> COMPLETED, atomic, with its RESEARCH_EXPERIMENT_COMPLETED
+ * journal event written in the same transaction (the markPaperCandidate /
+ * closeJournalTrade atomic conditional-updateMany-then-recheck pattern).
+ * Returns null on a miss: the experiment is already COMPLETED (a retried
+ * job, no duplicate event) or FAILED (terminal; a FAILED experiment is
+ * never silently relabeled COMPLETED).
+ */
+async function markResearchExperimentCompleted(id: string, backtestId: string): Promise<ResearchExperiment | null> {
+  return prisma.$transaction(async (tx) => {
+    const result = await tx.researchExperiment.updateMany({
+      where: { id, status: { in: [...ACTIVE_EXPERIMENT_STATUSES] } },
+      data: { status: "COMPLETED", backtestId, completedAt: new Date() },
+    });
+    if (result.count === 0) {
+      return null;
+    }
+
+    const row = await tx.researchExperiment.findUniqueOrThrow({ where: { id } });
+    const context = await experimentEventContext(tx, row.backtestId);
+
+    await createJournalEvent(
+      {
+        eventType: "RESEARCH_EXPERIMENT_COMPLETED",
+        entityType: "RESEARCH_EXPERIMENT",
+        entityId: row.id,
+        ...context,
+        metadata: { hypothesisId: row.hypothesisId, datasetRole: row.datasetRole, backtestId: row.backtestId },
+      },
+      tx,
+    );
+
+    return mapResearchExperiment(row);
+  });
+}
+
+/**
+ * QUEUED/RUNNING -> FAILED, atomic, with a RESEARCH_EXPERIMENT_FAILED
+ * journal event in the same transaction. Returns null on a miss. Crucially,
+ * a COMPLETED experiment can never be relabeled FAILED after the fact:
+ * doing so would drop it out of the final-test partial unique index's scope
+ * (status <> 'FAILED') and allow a "renewed" FINAL_TEST on the same
+ * hypothesis, defeating docs/research-methodology.md's "the final test
+ * dataset is not renewable" guarantee.
+ */
+async function markResearchExperimentFailed(id: string, failureReason: string): Promise<ResearchExperiment | null> {
+  return prisma.$transaction(async (tx) => {
+    const result = await tx.researchExperiment.updateMany({
+      where: { id, status: { in: [...ACTIVE_EXPERIMENT_STATUSES] } },
+      data: { status: "FAILED", failureReason, completedAt: new Date() },
+    });
+    if (result.count === 0) {
+      return null;
+    }
+
+    const row = await tx.researchExperiment.findUniqueOrThrow({ where: { id } });
+    const context = await experimentEventContext(tx, row.backtestId);
+
+    await createJournalEvent(
+      {
+        eventType: "RESEARCH_EXPERIMENT_FAILED",
+        entityType: "RESEARCH_EXPERIMENT",
+        entityId: row.id,
+        ...context,
+        metadata: {
+          hypothesisId: row.hypothesisId,
+          datasetRole: row.datasetRole,
+          backtestId: row.backtestId,
+          failureReason,
+        },
+      },
+      tx,
+    );
+
+    return mapResearchExperiment(row);
+  });
 }
 
 async function listResearchExperimentsForHypothesis(hypothesisId: string): Promise<ResearchExperiment[]> {
@@ -333,7 +567,10 @@ export const researchRepository = {
   createResearchHypothesis,
   getResearchHypothesis,
   listResearchHypotheses,
+  assertResearchExperimentPreconditions,
   createResearchExperiment,
+  getResearchExperimentByBacktestId,
+  markResearchExperimentRunning,
   markResearchExperimentCompleted,
   markResearchExperimentFailed,
   listResearchExperimentsForHypothesis,

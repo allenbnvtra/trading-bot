@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { TIMEFRAMES } from "./enums";
+import { TIMEFRAMES, type StrategyVersionStatus } from "./enums";
 
 /**
  * Milestone 7 research-agent queue. attempts: 1: an LLM call is neither
@@ -42,6 +42,24 @@ export type ResearchExperimentStatus = (typeof RESEARCH_EXPERIMENT_STATUSES)[num
 export const RESEARCH_DATASET_ROLES = ["RESEARCH", "VALIDATION", "FINAL_TEST", "WALK_FORWARD"] as const;
 export type ResearchDatasetRole = (typeof RESEARCH_DATASET_ROLES)[number];
 
+/**
+ * The StrategyVersionStatus a hypothesis's StrategyVersion advances TO when
+ * an experiment of each dataset role COMPLETES (see BacktestRunProcessor and
+ * strategiesRepository.advanceStrategyVersionStatus, which only ever moves
+ * forward). Completion-based, not outcome-based: a COMPLETED experiment
+ * means the backtest ran, not that the strategy passed. PAPER_CANDIDATE is
+ * deliberately absent: that transition stays human-gated
+ * (ResearchService.markPaperCandidate).
+ */
+export const STRATEGY_VERSION_STATUS_FOR_COMPLETED_DATASET_ROLE: Readonly<
+  Record<ResearchDatasetRole, StrategyVersionStatus>
+> = {
+  RESEARCH: "BACKTESTING",
+  VALIDATION: "VALIDATION",
+  FINAL_TEST: "OUT_OF_SAMPLE",
+  WALK_FORWARD: "WALK_FORWARD",
+};
+
 /** Optional scope narrowing for which journal trades feed the ResearchAgent. Empty body = all available data. */
 export const generateResearchHypothesisRequestSchema = z
   .object({
@@ -62,7 +80,14 @@ export const createResearchExperimentRequestSchema = z
     riskPercentage: z.string(),
     slippageTicks: z.number().int().nonnegative(),
   })
-  .strict();
+  .strict()
+  // A well-formed window is what the stage window-isolation check in
+  // researchRepository.createResearchExperiment relies on; an inverted
+  // window would let a later stage "end" before it starts.
+  .refine((input) => new Date(input.datasetWindowEnd).getTime() > new Date(input.datasetWindowStart).getTime(), {
+    message: "datasetWindowEnd must be after datasetWindowStart",
+    path: ["datasetWindowEnd"],
+  });
 export type CreateResearchExperimentRequestInput = z.infer<typeof createResearchExperimentRequestSchema>;
 
 /**

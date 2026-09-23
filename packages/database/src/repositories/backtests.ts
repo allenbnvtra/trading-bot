@@ -19,8 +19,18 @@ export interface CreateBacktestInput {
   assumptions: BacktestAssumptions;
 }
 
-export async function createBacktest(input: CreateBacktestInput): Promise<Backtest> {
-  const row = await prisma.backtest.create({
+/**
+ * `client` defaults to the top-level prisma singleton; pass a
+ * `$transaction` callback's `tx` to create the Backtest atomically with
+ * another write (mirrors journal-events.ts's createJournalEvent). Used by
+ * researchRepository.createResearchExperiment so a stage-order/final-test
+ * rejection never leaves an orphan Backtest row behind.
+ */
+export async function createBacktest(
+  input: CreateBacktestInput,
+  client: Pick<Prisma.TransactionClient, "backtest"> = prisma,
+): Promise<Backtest> {
+  const row = await client.backtest.create({
     data: {
       strategyVersionId: input.strategyVersionId,
       instrumentId: input.instrumentId,

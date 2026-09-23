@@ -1,20 +1,17 @@
 import Decimal from "decimal.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConflictException } from "@nestjs/common";
-import { ResearchBudgetExceededError } from "@trading-copilot/database";
+import { ResearchBudgetExceededError, ResearchStageOrderError } from "@trading-copilot/database";
 import type { EnrichedJournalTrade } from "@trading-copilot/analytics";
 import type { ResearchExperiment, StrategyVersion } from "@trading-copilot/trading-domain";
 import { ResearchService } from "./research.service";
 
-const { researchRepository, strategiesRepository, journalEventsRepository, instrumentsRepository, backtestsRepository } = vi.hoisted(() => ({
+const { researchRepository, strategiesRepository, journalEventsRepository, instrumentsRepository } = vi.hoisted(() => ({
   journalEventsRepository: {
     createJournalEvent: vi.fn(),
   },
   instrumentsRepository: {
     getInstrument: vi.fn(),
-  },
-  backtestsRepository: {
-    createBacktest: vi.fn(),
   },
   researchRepository: {
     getTodayResearchSpend: vi.fn(),
@@ -25,9 +22,13 @@ const { researchRepository, strategiesRepository, journalEventsRepository, instr
     listResearchExperimentsForHypothesis: vi.fn(),
     getAgentExecution: vi.fn(),
     createResearchExperiment: vi.fn(),
+    assertResearchExperimentPreconditions: vi.fn(),
   },
   strategiesRepository: {
     findStrategyVersionBySourceHypothesis: vi.fn(),
+    getStrategyByKey: vi.fn(),
+    createStrategy: vi.fn(),
+    createStrategyVersion: vi.fn(),
     markPaperCandidate: vi.fn(),
   },
 }));
@@ -46,7 +47,6 @@ vi.mock("@trading-copilot/database", async () => {
     strategiesRepository,
     journalEventsRepository,
     instrumentsRepository,
-    backtestsRepository,
   };
 });
 
@@ -59,7 +59,7 @@ describe("ResearchService.generateHypothesis", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     queueAdd = vi.fn().mockResolvedValue(undefined);
-    service = new ResearchService({ add: queueAdd } as never);
+    service = new ResearchService({ add: queueAdd } as never, { add: vi.fn() } as never);
   });
 
   it("throws ResearchBudgetExceededError when today's token spend already meets the configured budget", async () => {
@@ -144,33 +144,37 @@ function makeMatureTradeSet(): EnrichedJournalTrade[] {
   });
 }
 
+const RESEARCH_EXPERIMENT_INPUT = {
+  datasetRole: "RESEARCH",
+  instrumentId: "instrument-1",
+  timeframe: "5m",
+  datasetWindowStart: "2025-11-01T00:00:00.000Z",
+  datasetWindowEnd: "2025-12-01T00:00:00.000Z",
+  slippageTicks: 1,
+  riskPercentage: "1",
+  initialBalance: "100000",
+} as const;
+
 describe("ResearchService.createExperiment", () => {
   let service: ResearchService;
+  let backtestQueueAdd: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new ResearchService({ add: vi.fn() } as never);
+    backtestQueueAdd = vi.fn().mockResolvedValue(undefined);
+    service = new ResearchService({ add: vi.fn() } as never, { add: backtestQueueAdd } as never);
+    researchRepository.assertResearchExperimentPreconditions.mockResolvedValue(undefined);
   });
 
   it("records a RESEARCH_EXPERIMENT_CREATED journal event for the persisted experiment", async () => {
     researchRepository.getResearchHypothesis.mockResolvedValue({ id: "hypothesis-1" });
     instrumentsRepository.getInstrument.mockResolvedValue({ commissionPerContract: new Decimal("2.5") });
     strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(makeStrategyVersion());
-    backtestsRepository.createBacktest.mockResolvedValue({ id: "backtest-1" });
     researchRepository.createResearchExperiment.mockResolvedValue(
       makeExperiment({ id: "experiment-new", datasetRole: "RESEARCH", status: "QUEUED", completedAt: null }),
     );
 
-    const experiment = await service.createExperiment("hypothesis-1", {
-      datasetRole: "RESEARCH",
-      instrumentId: "instrument-1",
-      timeframe: "5m",
-      datasetWindowStart: "2025-11-01T00:00:00.000Z",
-      datasetWindowEnd: "2025-12-01T00:00:00.000Z",
-      slippageTicks: 1,
-      riskPercentage: "1",
-      initialBalance: "100000",
-    } as never);
+    const experiment = await service.createExperiment("hypothesis-1", RESEARCH_EXPERIMENT_INPUT as never);
 
     expect(experiment.id).toBe("experiment-new");
     expect(journalEventsRepository.createJournalEvent).toHaveBeenCalledTimes(1);
@@ -185,26 +189,62 @@ describe("ResearchService.createExperiment", () => {
     );
   });
 
-  it("records no journal event when the experiment insert itself fails", async () => {
+  it("creates the Backtest inside createResearchExperiment and enqueues it onto BACKTEST_RUN_QUEUE", async () => {
     researchRepository.getResearchHypothesis.mockResolvedValue({ id: "hypothesis-1" });
     instrumentsRepository.getInstrument.mockResolvedValue({ commissionPerContract: new Decimal("2.5") });
     strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(makeStrategyVersion());
-    backtestsRepository.createBacktest.mockResolvedValue({ id: "backtest-1" });
-    researchRepository.createResearchExperiment.mockRejectedValue(new Error("stage order"));
+    researchRepository.createResearchExperiment.mockResolvedValue(
+      makeExperiment({ id: "experiment-new", datasetRole: "RESEARCH", status: "QUEUED", backtestId: "backtest-9" }),
+    );
 
-    await expect(
-      service.createExperiment("hypothesis-1", {
-        datasetRole: "RESEARCH",
+    await service.createExperiment("hypothesis-1", RESEARCH_EXPERIMENT_INPUT as never);
+
+    expect(researchRepository.createResearchExperiment).toHaveBeenCalledWith({
+      hypothesisId: "hypothesis-1",
+      datasetRole: "RESEARCH",
+      datasetWindowStart: new Date("2025-11-01T00:00:00.000Z"),
+      datasetWindowEnd: new Date("2025-12-01T00:00:00.000Z"),
+      backtest: {
+        strategyVersionId: "strategy-version-1",
         instrumentId: "instrument-1",
         timeframe: "5m",
-        datasetWindowStart: "2025-11-01T00:00:00.000Z",
-        datasetWindowEnd: "2025-12-01T00:00:00.000Z",
-        slippageTicks: 1,
-        riskPercentage: "1",
-        initialBalance: "100000",
-      } as never),
-    ).rejects.toThrow("stage order");
+        startDate: new Date("2025-11-01T00:00:00.000Z"),
+        endDate: new Date("2025-12-01T00:00:00.000Z"),
+        assumptions: { commissionPerContract: "2.5", slippageTicks: 1, riskPercentage: "1", initialBalance: "100000" },
+      },
+    });
+    expect(backtestQueueAdd).toHaveBeenCalledTimes(1);
+    expect(backtestQueueAdd).toHaveBeenCalledWith("run", { backtestId: "backtest-9" });
+  });
+
+  it("records no journal event and enqueues nothing when the experiment insert itself fails", async () => {
+    researchRepository.getResearchHypothesis.mockResolvedValue({ id: "hypothesis-1" });
+    instrumentsRepository.getInstrument.mockResolvedValue({ commissionPerContract: new Decimal("2.5") });
+    strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(makeStrategyVersion());
+    researchRepository.createResearchExperiment.mockRejectedValue(new Error("stage order"));
+
+    await expect(service.createExperiment("hypothesis-1", RESEARCH_EXPERIMENT_INPUT as never)).rejects.toThrow(
+      "stage order",
+    );
     expect(journalEventsRepository.createJournalEvent).not.toHaveBeenCalled();
+    expect(backtestQueueAdd).not.toHaveBeenCalled();
+  });
+
+  it("writes nothing at all (no StrategyVersion, no experiment, no job) when a precondition fails", async () => {
+    researchRepository.getResearchHypothesis.mockResolvedValue({ id: "hypothesis-1" });
+    researchRepository.assertResearchExperimentPreconditions.mockRejectedValue(
+      new ResearchStageOrderError("hypothesis-1", "RESEARCH", "window overlap"),
+    );
+    strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(null);
+
+    await expect(service.createExperiment("hypothesis-1", RESEARCH_EXPERIMENT_INPUT as never)).rejects.toThrow(
+      ResearchStageOrderError,
+    );
+    expect(strategiesRepository.createStrategy).not.toHaveBeenCalled();
+    expect(strategiesRepository.createStrategyVersion).not.toHaveBeenCalled();
+    expect(researchRepository.createResearchExperiment).not.toHaveBeenCalled();
+    expect(journalEventsRepository.createJournalEvent).not.toHaveBeenCalled();
+    expect(backtestQueueAdd).not.toHaveBeenCalled();
   });
 });
 
@@ -213,7 +253,7 @@ describe("ResearchService.markPaperCandidate", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new ResearchService({ add: vi.fn() } as never);
+    service = new ResearchService({ add: vi.fn() } as never, { add: vi.fn() } as never);
   });
 
   it("throws when FINAL_TEST/WALK_FORWARD experiments are not both COMPLETED", async () => {

@@ -6,8 +6,10 @@ import {
   backtestsRepository,
   candlesRepository,
   instrumentsRepository,
+  researchRepository,
   strategiesRepository,
 } from "@trading-copilot/database";
+import { STRATEGY_VERSION_STATUS_FOR_COMPLETED_DATASET_ROLE } from "@trading-copilot/shared-types";
 import { STRATEGY_REGISTRY, type StrategyKey } from "@trading-copilot/strategy-engine";
 import { calculateBacktestMetrics, runBacktest, type StrategyParametersFor } from "@trading-copilot/backtester";
 import type { StrategyVersion } from "@trading-copilot/trading-domain";
@@ -28,6 +30,15 @@ function isStrategyKey(key: string): key is StrategyKey {
  * All backtesting math lives in @trading-copilot/backtester /
  * @trading-copilot/strategy-engine; this processor only orchestrates
  * fetch -> compute -> persist -> status.
+ *
+ * Milestone 7: the same processor also runs every ResearchExperiment's
+ * Backtest (ResearchService.createExperiment enqueues onto this queue; no
+ * duplicated backtest logic). A research-originated Backtest has exactly
+ * one ResearchExperiment (ResearchExperiment.backtestId is unique); a plain
+ * POST /backtests Backtest has none, and for it the research hooks below are
+ * a single null lookup and nothing else. Every research status transition
+ * is an atomic conditional update in the repository (a retried job can
+ * never double-complete, un-fail, or relabel a COMPLETED experiment FAILED).
  */
 @Processor(BACKTEST_RUN_QUEUE, { concurrency: WORKER_CONCURRENCY })
 export class BacktestRunProcessor extends WorkerHost {
@@ -38,6 +49,7 @@ export class BacktestRunProcessor extends WorkerHost {
 
     try {
       await backtestsRepository.markBacktestRunning(backtestId);
+      await this.markResearchExperimentRunning(backtestId);
 
       const backtest = await backtestsRepository.getBacktest(backtestId);
       if (!backtest) {
@@ -123,7 +135,81 @@ export class BacktestRunProcessor extends WorkerHost {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Backtest ${backtestId} failed: ${message}`);
       await backtestsRepository.markBacktestFailed(backtestId, message);
+      await this.failResearchExperiment(backtestId, message);
       throw error;
+    }
+
+    // Deliberately outside the try above: the Backtest itself is already
+    // durably COMPLETED at this point, so an error while recording the
+    // research side must not relabel a genuinely completed Backtest FAILED.
+    // It still fails the job (rethrown), so the problem is visible, and
+    // every step below is idempotent for a re-run.
+    await this.completeResearchExperiment(backtestId);
+  }
+
+  private async markResearchExperimentRunning(backtestId: string): Promise<void> {
+    const experiment = await researchRepository.getResearchExperimentByBacktestId(backtestId);
+    if (experiment) {
+      await researchRepository.markResearchExperimentRunning(experiment.id);
+    }
+  }
+
+  /**
+   * Marks the experiment COMPLETED (its RESEARCH_EXPERIMENT_COMPLETED
+   * journal event is written in the same transaction by the repository) and
+   * advances its StrategyVersion per
+   * STRATEGY_VERSION_STATUS_FOR_COMPLETED_DATASET_ROLE. The advance runs
+   * whenever the experiment is COMPLETED after this call, including when a
+   * previous attempt already completed it, so a job that died between the
+   * two steps heals on re-run; advanceStrategyVersionStatus is monotonic
+   * and a no-op once the status is already there.
+   */
+  private async completeResearchExperiment(backtestId: string): Promise<void> {
+    const experiment = await researchRepository.getResearchExperimentByBacktestId(backtestId);
+    if (!experiment) {
+      return;
+    }
+
+    const completed =
+      (await researchRepository.markResearchExperimentCompleted(experiment.id, backtestId)) ??
+      (await researchRepository.getResearchExperimentByBacktestId(backtestId));
+    if (!completed || completed.status !== "COMPLETED") {
+      this.logger.warn(
+        `ResearchExperiment ${experiment.id} for Backtest ${backtestId} is ${completed?.status ?? "missing"}, ` +
+          "not COMPLETED; leaving its StrategyVersion status unchanged",
+      );
+      return;
+    }
+
+    const backtest = await backtestsRepository.getBacktest(backtestId);
+    if (!backtest) {
+      throw new Error(`Backtest ${backtestId} not found while advancing its research StrategyVersion`);
+    }
+    await strategiesRepository.advanceStrategyVersionStatus(
+      backtest.strategyVersionId,
+      STRATEGY_VERSION_STATUS_FOR_COMPLETED_DATASET_ROLE[completed.datasetRole],
+      { researchExperimentId: completed.id },
+    );
+  }
+
+  /**
+   * Marks the experiment FAILED (RESEARCH_EXPERIMENT_FAILED journal event in
+   * the same transaction). Never advances the StrategyVersion. Errors here
+   * are logged, not thrown, so the original backtest error is what the
+   * caller rethrows. BACKTEST_RUN_QUEUE uses BullMQ's default attempts: 1,
+   * so a failed run is terminal and FAILED is the experiment's final state;
+   * a human re-runs the stage via a fresh experiment (failed experiments
+   * are kept, never deleted, per docs/research-methodology.md).
+   */
+  private async failResearchExperiment(backtestId: string, message: string): Promise<void> {
+    try {
+      const experiment = await researchRepository.getResearchExperimentByBacktestId(backtestId);
+      if (experiment) {
+        await researchRepository.markResearchExperimentFailed(experiment.id, message);
+      }
+    } catch (researchError) {
+      const detail = researchError instanceof Error ? researchError.message : String(researchError);
+      this.logger.error(`Could not mark the ResearchExperiment for Backtest ${backtestId} FAILED: ${detail}`);
     }
   }
 }

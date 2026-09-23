@@ -72,6 +72,18 @@ DISCOVERED → BACKTESTING → VALIDATION → OUT_OF_SAMPLE → WALK_FORWARD →
 
 A strategy change is always a new `StrategyVersion`. An approved historical version is never silently altered.
 
+## How the Milestone 7 experiment pipeline enforces this
+
+- **Execution.** `POST /research/hypotheses/:id/experiments` creates the experiment and its `Backtest` in one transaction, then enqueues the backtest onto the same `backtest-run` queue and `BacktestRunProcessor` as `POST /backtests`. The experiment moves `QUEUED → RUNNING → COMPLETED | FAILED` with its backtest. Every transition is an atomic conditional update, and each terminal one writes a `RESEARCH_EXPERIMENT_COMPLETED` or `RESEARCH_EXPERIMENT_FAILED` journal event.
+- **Stage order.** A stage (`RESEARCH → VALIDATION → FINAL_TEST → WALK_FORWARD`) requires a COMPLETED experiment at the prior stage.
+- **Window isolation.** From `VALIDATION` onward, a stage's window must start at or after the latest window end of every non-FAILED experiment for the same hypothesis.
+- **Holdout.** `FINAL_TEST` and `WALK_FORWARD` windows must start at or after the hypothesis's `sourceDataSummary.sampleWindowEnd`, the last journal trade the hypothesis was generated from.
+- **Final test is not renewable.** At most one non-FAILED `FINAL_TEST` per hypothesis (a partial unique index on `status <> 'FAILED'`). A COMPLETED experiment can never be relabeled FAILED, so a spent final test stays spent.
+- **History is kept.** Deleting a hypothesis or backtest that an experiment references is refused (`ON DELETE RESTRICT`). FAILED experiments are never deleted.
+- **Lifecycle.** A completed experiment advances its `StrategyVersion` forward only: `RESEARCH → BACKTESTING`, `VALIDATION → VALIDATION`, `FINAL_TEST → OUT_OF_SAMPLE`, `WALK_FORWARD → WALK_FORWARD`. It never moves a version backward and never past `WALK_FORWARD`. `PAPER_CANDIDATE` is a separate, human-confirmed action.
+
+Known limitations: advancement is completion-based, not outcome-based (a COMPLETED experiment means the backtest ran, not that the strategy passed); the sample-size guardrail counts system-wide journal trades, not the experiment's own backtest trades; and the stage checks are application-level reads, so two simultaneous create requests for the same hypothesis could both pass the window check (the final-test rule alone is a database constraint).
+
 ## Counterfactual analysis
 
 Future counterfactual questions ("would a wider stop have mattered?", "would waiting for candle close have mattered?") are research artifacts. They are always clearly labeled hypothetical/simulated and are never mixed with actual trade outcomes in reporting.

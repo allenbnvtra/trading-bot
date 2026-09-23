@@ -2,7 +2,6 @@ import { InjectQueue } from "@nestjs/bullmq";
 import { ConflictException, Injectable, NotFoundException } from "@nestjs/common";
 import type { Queue } from "bullmq";
 import {
-  backtestsRepository,
   instrumentsRepository,
   journalEventsRepository,
   researchRepository,
@@ -19,6 +18,7 @@ import {
   type ResearchAgentJobPayload,
 } from "@trading-copilot/shared-types";
 import type { AgentExecution, ResearchExperiment, ResearchHypothesis } from "@trading-copilot/trading-domain";
+import { BACKTEST_RUN_JOB, BACKTEST_RUN_QUEUE, type BacktestRunJobPayload } from "../common/queue.constants";
 
 /** Container Strategy key every AI-proposed StrategyDefinition is versioned under. See docs/ai-research.md. */
 const AI_GENERATED_STRATEGY_KEY = "ai-generated-dsl-v1";
@@ -34,14 +34,20 @@ function getDailyTokenBudget(): number {
  * (`researchRepository.foo(...)`), not constructor-injected. This mirrors
  * every other service in apps/api (see backtest.service.ts, setup.service.ts,
  * analytics.service.ts): none of them take a repository via the constructor,
- * DI-token or otherwise. Only the BullMQ queue is constructor-injected, via
- * `@InjectQueue`, matching BacktestService exactly.
+ * DI-token or otherwise. Only the BullMQ queues are constructor-injected, via
+ * `@InjectQueue`, matching BacktestService exactly: the research-agent queue
+ * for hypothesis generation, and the existing, unmodified backtest-run queue
+ * every experiment's Backtest is executed through (the same
+ * BacktestRunProcessor that serves POST /backtests; no duplicated backtest
+ * logic).
  */
 @Injectable()
 export class ResearchService {
   constructor(
     @InjectQueue(RESEARCH_AGENT_QUEUE)
     private readonly agentQueue: Queue<ResearchAgentJobPayload>,
+    @InjectQueue(BACKTEST_RUN_QUEUE)
+    private readonly backtestQueue: Queue<BacktestRunJobPayload>,
   ) {}
 
   /**
@@ -102,9 +108,22 @@ export class ResearchService {
    * "ai-generated-dsl-v1" key: see findStrategyVersionBySourceHypothesis's
    * doc comment in strategies.ts for why every stage of one hypothesis's
    * pipeline must share a single StrategyVersion row, not a fresh one per
-   * stage), and the ResearchExperiment row itself. Dataset-role stage
-   * ordering and the final-test reuse safeguard are both enforced inside
-   * researchRepository.createResearchExperiment (Task 5).
+   * stage), and the ResearchExperiment row itself, then enqueues the
+   * Backtest onto BACKTEST_RUN_QUEUE exactly like BacktestService.create.
+   * BacktestRunProcessor then drives the experiment to COMPLETED/FAILED and
+   * advances the StrategyVersion's status.
+   *
+   * Ordering, so a rejected request leaves no orphan rows:
+   * 1. Read-only checks: hypothesis exists, sample-size guardrails, then
+   *    researchRepository.assertResearchExperimentPreconditions (stage
+   *    order, window isolation, holdout), then the instrument lookup.
+   * 2. Only then any write: the StrategyVersion (first stage only).
+   * 3. Backtest + ResearchExperiment in ONE transaction inside
+   *    researchRepository.createResearchExperiment, which re-runs the
+   *    preconditions authoritatively and owns the final-test partial unique
+   *    index; any rejection there rolls the Backtest back too.
+   * 4. Journal event, then enqueue (after commit, so the worker can never
+   *    pick up a job for a Backtest row that does not exist yet).
    */
   async createExperiment(
     hypothesisId: string,
@@ -148,6 +167,17 @@ export class ResearchService {
       }
     }
 
+    const experimentWindow = {
+      hypothesisId,
+      datasetRole: input.datasetRole,
+      datasetWindowStart: new Date(input.datasetWindowStart),
+      datasetWindowEnd: new Date(input.datasetWindowEnd),
+    };
+
+    // Fast-fail before any write (see the doc comment above, step 1). The
+    // same checks run again, authoritatively, inside the create transaction.
+    await researchRepository.assertResearchExperimentPreconditions(experimentWindow);
+
     const instrument = await instrumentsRepository.getInstrument(input.instrumentId);
     if (!instrument) {
       throw new NotFoundException(`Instrument ${input.instrumentId} not found`);
@@ -175,27 +205,29 @@ export class ResearchService {
       });
     }
 
-    const backtest = await backtestsRepository.createBacktest({
-      strategyVersionId: strategyVersion.id,
-      instrumentId: input.instrumentId,
-      timeframe: input.timeframe,
-      startDate: new Date(input.datasetWindowStart),
-      endDate: new Date(input.datasetWindowEnd),
-      assumptions: {
-        commissionPerContract: instrument.commissionPerContract.toString(),
-        slippageTicks: input.slippageTicks,
-        riskPercentage: input.riskPercentage,
-        initialBalance: input.initialBalance,
+    const experiment = await researchRepository.createResearchExperiment({
+      ...experimentWindow,
+      backtest: {
+        strategyVersionId: strategyVersion.id,
+        instrumentId: input.instrumentId,
+        timeframe: input.timeframe,
+        startDate: experimentWindow.datasetWindowStart,
+        endDate: experimentWindow.datasetWindowEnd,
+        assumptions: {
+          commissionPerContract: instrument.commissionPerContract.toString(),
+          slippageTicks: input.slippageTicks,
+          riskPercentage: input.riskPercentage,
+          initialBalance: input.initialBalance,
+        },
       },
     });
 
-    const experiment = await researchRepository.createResearchExperiment({
-      hypothesisId,
-      datasetRole: input.datasetRole,
-      datasetWindowStart: new Date(input.datasetWindowStart),
-      datasetWindowEnd: new Date(input.datasetWindowEnd),
-      backtestId: backtest.id,
-    });
+    const backtestId = experiment.backtestId;
+    if (!backtestId) {
+      // createResearchExperiment always links the Backtest it was given in
+      // the same transaction; reaching this means that contract broke.
+      throw new Error(`ResearchExperiment ${experiment.id} was created without its Backtest`);
+    }
 
     await journalEventsRepository.createJournalEvent({
       eventType: "RESEARCH_EXPERIMENT_CREATED",
@@ -204,8 +236,10 @@ export class ResearchService {
       instrumentId: input.instrumentId,
       strategyId: strategyVersion.strategyId,
       strategyVersionId: strategyVersion.id,
-      metadata: { hypothesisId, datasetRole: experiment.datasetRole, backtestId: backtest.id },
+      metadata: { hypothesisId, datasetRole: experiment.datasetRole, backtestId },
     });
+
+    await this.backtestQueue.add(BACKTEST_RUN_JOB, { backtestId });
 
     return experiment;
   }

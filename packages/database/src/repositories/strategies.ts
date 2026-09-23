@@ -1,5 +1,5 @@
 import type { Prisma } from "@prisma/client";
-import type { StrategyVersionStatus } from "@trading-copilot/shared-types";
+import { STRATEGY_VERSION_STATUSES, type StrategyVersionStatus } from "@trading-copilot/shared-types";
 import type { Strategy, StrategyVersion } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
 import { mapStrategy, mapStrategyVersion } from "../mappers";
@@ -210,5 +210,95 @@ export async function markPaperCandidate(id: string): Promise<StrategyVersion | 
     );
 
     return mapStrategyVersion(row);
+  });
+}
+
+/** Automatic (experiment-driven) status advances never go past this; PAPER_CANDIDATE onward is human-gated. */
+const MAX_AUTOMATIC_STRATEGY_VERSION_STATUS: StrategyVersionStatus = "WALK_FORWARD";
+
+function strategyVersionStatusRank(status: StrategyVersionStatus): number {
+  return STRATEGY_VERSION_STATUSES.indexOf(status);
+}
+
+/**
+ * Milestone 7 fix wave 1: the automatic, monotonic-only StrategyVersion
+ * status advance driven by ResearchExperiment completion (see
+ * BacktestRunProcessor and STRATEGY_VERSION_STATUS_FOR_COMPLETED_DATASET_ROLE
+ * in research.ts). This is what makes markPaperCandidate's
+ * `status === "WALK_FORWARD"` precondition reachable through the real
+ * system rather than only via a hand-edited row.
+ *
+ * Ordering is STRATEGY_VERSION_STATUSES' declared sequence (identical to the
+ * Prisma enum's): DISCOVERED < BACKTESTING < VALIDATION < OUT_OF_SAMPLE <
+ * WALK_FORWARD < PAPER_CANDIDATE < ... . The version only ever moves
+ * forward: if its current status is already at or past `targetStatus`
+ * (including anything a human set later, e.g. PAPER_CANDIDATE, APPROVED,
+ * PAUSED, RETIRED), this is a no-op returning null. That makes it safe for
+ * experiments completing out of order and idempotent on a retried job.
+ * Never reaches PAPER_CANDIDATE or beyond: those stay human-gated
+ * (markPaperCandidate), enforced by the explicit ceiling check below.
+ *
+ * Uses the same atomic conditional `updateMany`-then-recheck pattern as
+ * markPaperCandidate/closeJournalTrade: the `where` clause pins the exact
+ * status that was just read, so the recorded `from` in the
+ * STRATEGY_VERSION_STATUS_CHANGED event is accurate even under concurrency.
+ * On a compare-and-set miss (another writer changed the status in between)
+ * it re-reads and re-evaluates; the loop is bounded by the number of
+ * statuses, since every miss means the status actually changed.
+ */
+export async function advanceStrategyVersionStatus(
+  id: string,
+  targetStatus: StrategyVersionStatus,
+  context: { researchExperimentId?: string } = {},
+): Promise<StrategyVersion | null> {
+  if (strategyVersionStatusRank(targetStatus) > strategyVersionStatusRank(MAX_AUTOMATIC_STRATEGY_VERSION_STATUS)) {
+    throw new Error(
+      `advanceStrategyVersionStatus cannot move a StrategyVersion to ${targetStatus}: ` +
+        `automatic advances stop at ${MAX_AUTOMATIC_STRATEGY_VERSION_STATUS}, later statuses are human-gated`,
+    );
+  }
+
+  return prisma.$transaction(async (tx) => {
+    for (let attempt = 0; attempt < STRATEGY_VERSION_STATUSES.length; attempt += 1) {
+      const current = await tx.strategyVersion.findUnique({ where: { id } });
+      if (!current) {
+        return null;
+      }
+      const from = current.status as StrategyVersionStatus;
+      if (strategyVersionStatusRank(from) >= strategyVersionStatusRank(targetStatus)) {
+        return null;
+      }
+
+      const result = await tx.strategyVersion.updateMany({
+        where: { id, status: from },
+        data: { status: targetStatus },
+      });
+      if (result.count === 0) {
+        continue;
+      }
+
+      const row = await tx.strategyVersion.findUniqueOrThrow({ where: { id } });
+
+      await createJournalEvent(
+        {
+          eventType: "STRATEGY_VERSION_STATUS_CHANGED",
+          entityType: "STRATEGY_VERSION",
+          entityId: row.id,
+          correlationId: row.id,
+          strategyId: row.strategyId,
+          strategyVersionId: row.id,
+          metadata: {
+            from,
+            to: targetStatus,
+            trigger: "RESEARCH_EXPERIMENT_COMPLETED",
+            ...(context.researchExperimentId ? { researchExperimentId: context.researchExperimentId } : {}),
+          },
+        },
+        tx,
+      );
+
+      return mapStrategyVersion(row);
+    }
+    return null;
   });
 }

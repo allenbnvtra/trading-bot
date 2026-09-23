@@ -3,22 +3,25 @@ import {
   createResearchExperimentRequestSchema,
   generateResearchHypothesisRequestSchema,
   markPaperCandidateRequestSchema,
+  type CreateResearchExperimentRequestInput,
+  type GenerateResearchHypothesisRequestInput,
 } from "@trading-copilot/shared-types";
+import { ZodValidationPipe } from "../common/zod-validation.pipe";
 import { ResearchService } from "./research.service";
 
 /**
- * Thin: every handler validates via a shared-types Zod schema
- * (`.parse(body)` on an `unknown` body, never trusting the body's inferred
- * type directly) and delegates straight to ResearchService. No backtesting,
- * research-analytics, or strategy-lifecycle logic here.
+ * Thin: every handler validates its body via a shared-types Zod schema
+ * through ZodValidationPipe (so an invalid body is a 400 with the Zod
+ * issues, matching every other controller in apps/api, rather than a raw
+ * ZodError escaping as a 500) and delegates straight to ResearchService. No
+ * backtesting, research-analytics, or strategy-lifecycle logic here.
  */
 @Controller("research")
 export class ResearchController {
   constructor(private readonly researchService: ResearchService) {}
 
   @Post("hypotheses/generate")
-  generate(@Body() body: unknown) {
-    const input = generateResearchHypothesisRequestSchema.parse(body);
+  generate(@Body(new ZodValidationPipe(generateResearchHypothesisRequestSchema)) input: GenerateResearchHypothesisRequestInput) {
     return this.researchService.generateHypothesis(input);
   }
 
@@ -33,8 +36,10 @@ export class ResearchController {
   }
 
   @Post("hypotheses/:id/experiments")
-  createExperiment(@Param("id") id: string, @Body() body: unknown) {
-    const input = createResearchExperimentRequestSchema.parse(body);
+  createExperiment(
+    @Param("id") id: string,
+    @Body(new ZodValidationPipe(createResearchExperimentRequestSchema)) input: CreateResearchExperimentRequestInput,
+  ) {
     return this.researchService.createExperiment(id, input);
   }
 
@@ -45,8 +50,11 @@ export class ResearchController {
    * empty/wrong payload.
    */
   @Post("hypotheses/:id/strategy-versions/:versionId/mark-paper-candidate")
-  async markPaperCandidate(@Param("id") id: string, @Param("versionId") versionId: string, @Body() body: unknown) {
-    markPaperCandidateRequestSchema.parse(body);
+  async markPaperCandidate(
+    @Param("id") id: string,
+    @Param("versionId") versionId: string,
+    @Body(new ZodValidationPipe(markPaperCandidateRequestSchema)) _body: unknown,
+  ) {
     await this.researchService.markPaperCandidate(id, versionId);
     return { status: "PAPER_CANDIDATE" };
   }
