@@ -2,7 +2,7 @@ import { z } from "zod";
 import { TIMEFRAMES } from "./enums";
 
 /**
- * Milestone 7 research-agent queue. attempts: 1 — an LLM call is neither
+ * Milestone 7 research-agent queue. attempts: 1: an LLM call is neither
  * free nor safe to retry automatically (see docs/ai-research.md); a failed
  * AgentExecution is retried by a human triggering a fresh one via
  * POST /research/hypotheses/generate, mirroring SCREENSHOT_QUEUE's
@@ -38,7 +38,7 @@ export type ResearchHypothesisStatus = (typeof RESEARCH_HYPOTHESIS_STATUSES)[num
 export const RESEARCH_EXPERIMENT_STATUSES = ["QUEUED", "RUNNING", "COMPLETED", "FAILED"] as const;
 export type ResearchExperimentStatus = (typeof RESEARCH_EXPERIMENT_STATUSES)[number];
 
-/** Order matters — see docs/research-methodology.md "The pipeline". */
+/** Order matters: see docs/research-methodology.md "The pipeline". */
 export const RESEARCH_DATASET_ROLES = ["RESEARCH", "VALIDATION", "FINAL_TEST", "WALK_FORWARD"] as const;
 export type ResearchDatasetRole = (typeof RESEARCH_DATASET_ROLES)[number];
 
@@ -66,7 +66,7 @@ export const createResearchExperimentRequestSchema = z
 export type CreateResearchExperimentRequestInput = z.infer<typeof createResearchExperimentRequestSchema>;
 
 /**
- * A human-triggered action, never automatic — see CLAUDE.md "AI must never
+ * A human-triggered action, never automatic: see CLAUDE.md "AI must never
  * directly modify an approved strategy" and the WALK_FORWARD-completion
  * requirement documented on ResearchService.markPaperCandidate.
  */
