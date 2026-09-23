@@ -9,3 +9,4 @@ export * from "./setup-expiration";
 export * from "./webhook-reconciliation";
 export * from "./screenshot";
 export * from "./notifications";
+export * from "./research";
