@@ -1,6 +1,7 @@
 import type { TradeAnalyticsMetrics } from "@/lib/api";
 import {
   formatCurrency,
+  formatDecimal,
   formatInteger,
   formatPercent,
   formatPercentValue,
@@ -37,8 +38,8 @@ export default function AnalyticsStatGrid({ metrics }: { metrics: TradeAnalytics
       label: "Consecutive Wins / Losses",
       value: `${formatInteger(metrics.maximumConsecutiveWins)} / ${formatInteger(metrics.maximumConsecutiveLosses)}`,
     },
-    { label: "Avg MFE", value: formatCurrency(metrics.mfeAverage) },
-    { label: "Avg MAE", value: formatCurrency(metrics.maeAverage) },
+    { label: "Avg MFE (points)", value: formatDecimal(metrics.mfeAverage, 4) },
+    { label: "Avg MAE (points)", value: formatDecimal(metrics.maeAverage, 4) },
     { label: "Total Fees", value: formatCurrency(metrics.totalFees) },
     { label: "Avg Slippage", value: formatCurrency(metrics.averageSlippage) },
   ];
