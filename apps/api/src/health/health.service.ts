@@ -74,9 +74,10 @@ export class HealthService implements OnModuleDestroy {
 
   /**
    * Uses two dedicated indexed `take: 1` queries -
-   * findMostRecentInboundWebhookEvent (backed by `[provider, receivedAt]`)
-   * and findMostRecentProcessedInboundWebhookEvent (backed by
-   * `[processingStatus, receivedAt]`) - rather than listing every
+   * findMostRecentInboundWebhookEvent (backed by the plain `[receivedAt]`
+   * index, since this query has no `where` clause for a compound index's
+   * leading column to filter on) and findMostRecentProcessedInboundWebhookEvent
+   * (backed by `[processingStatus, receivedAt]`) - rather than listing every
    * InboundWebhookEvent just to read the first one. See
    * packages/database/src/repositories/inbound-webhook-events.ts.
    */

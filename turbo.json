@@ -13,6 +13,18 @@
       "dependsOn": ["^build"],
       "outputs": []
     },
+    "@trading-copilot/api#test": {
+      // apps/api and @trading-copilot/database's own tests both run
+      // against the same shared, long-lived dev Postgres (no per-test
+      // transaction isolation), and some assertions in both suites depend
+      // on "most recent row in this table" semantics. Running them as
+      // concurrent OS processes (the default with no dependency between
+      // them) opens a race where one suite's fixture rows are visible to
+      // the other mid-test. Forcing apps/api's test task to wait for
+      // @trading-copilot/database's test task closes that race.
+      "dependsOn": ["^build", "@trading-copilot/database#test"],
+      "outputs": []
+    },
     "lint": {
       "outputs": []
     },

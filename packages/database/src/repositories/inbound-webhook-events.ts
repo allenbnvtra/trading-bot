@@ -374,9 +374,12 @@ export async function listInboundWebhookEvents(
 
 /**
  * The single most recent InboundWebhookEvent, regardless of outcome. Backed
- * by the `[provider, receivedAt]` index — a `take: 1` query, never a full
- * table scan (see docs/tradingview-setup.md "Known limitations", now
- * fixed). Used only by GET /health.
+ * by the plain `[receivedAt]` index — a `take: 1` query, never a full table
+ * scan (see docs/tradingview-setup.md "Known limitations", now fixed). Note
+ * this query has no `where` clause, so neither `[provider, receivedAt]` nor
+ * `[processingStatus, receivedAt]` below can serve it: a compound index's
+ * leading column must have an equality filter for the trailing column's
+ * `ORDER BY` to use that index. Used only by GET /health.
  */
 export async function findMostRecentInboundWebhookEvent(): Promise<InboundWebhookEvent | null> {
   const row = await prisma.inboundWebhookEvent.findFirst({

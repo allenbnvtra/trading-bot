@@ -745,5 +745,13 @@ model InboundWebhookEvent {
   @@index([provider, receivedAt])
   @@index([processingStatus])
   @@index([processingStatus, receivedAt])
+  // Backs findMostRecentInboundWebhookEvent's unfiltered "newest row"
+  // query. A compound index's leading column must have an equality filter
+  // for the trailing column's ORDER BY to use the index, so
+  // [provider, receivedAt] and [processingStatus, receivedAt] above cannot
+  // serve a query with no `where` clause at all - this plain single-column
+  // index is what makes that `take: 1` query an index scan instead of a
+  // full table scan.
+  @@index([receivedAt])
   @@index([setupId])
 }
