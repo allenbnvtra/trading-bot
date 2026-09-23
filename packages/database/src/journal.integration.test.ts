@@ -233,6 +233,30 @@ describe.skipIf(!process.env.DATABASE_URL)("journal pipeline (live Postgres)", (
       expect(current!.timestamp.getTime()).toBeGreaterThanOrEqual(previous!.timestamp.getTime());
     }
 
+    // Milestone 6 final-review MEDIUM fix: TRADE_EXECUTED/TRADE_CLOSED must
+    // carry real metadata so a reader of the JournalEvent stream alone (the
+    // documented audit-reconstruction mechanism for a Setup) can tell WHAT a
+    // trade executed/closed as, without a second query against JournalTrade
+    // directly by entityId.
+    const tradeExecutedEvent = timeline.find((event) => event.eventType === "TRADE_EXECUTED");
+    expect(tradeExecutedEvent?.metadata).toEqual({
+      actualEntry: actualEntry.toString(),
+      quantity: riskCalculation.calculatedQuantity,
+    });
+
+    // The metadata's netPnl/rMultiple are the raw, un-truncated Decimals
+    // computeJournalTradeClose produced before the JournalTrade row's own
+    // decimal(*, 8) columns rounded them on write, so they're compared
+    // against expectedNetPnl/expectedRMultiple (computed independently at
+    // full precision above), not against trade.netPnl/trade.rMultiple's
+    // DB-rounded read-back values.
+    const tradeClosedEvent = timeline.find((event) => event.eventType === "TRADE_CLOSED");
+    expect(tradeClosedEvent?.metadata).toEqual({
+      outcome: trade.outcome,
+      netPnl: expectedNetPnl.toString(),
+      rMultiple: expectedRMultiple.toString(),
+    });
+
     // --- 7. getNormalizedTrades: both sources appear in normalized form ----
 
     const backtestTrades = await prisma.backtestTrade.findMany({
@@ -793,6 +817,136 @@ describe.skipIf(!process.env.DATABASE_URL)("journal pipeline (live Postgres)", (
         where: { instrumentId: instrument.id, timeframe, timestamp: candleTimestamp },
       });
     }
+  });
+
+  /**
+   * Milestone 6 final-review MEDIUM fix: TRADE_SKIPPED must carry the
+   * human's skipReason in metadata, not just an empty {} default — otherwise
+   * a reader of the JournalEvent stream alone can see a Setup was skipped
+   * but never WHY.
+   */
+  it("emits TRADE_SKIPPED with the skipReason in metadata when a JournalTrade is created SKIPPED", async () => {
+    const instrument = await instrumentsRepository.findInstrumentBySymbolAndExchange("GENFUT1", "SIM-FUT");
+    expect(instrument).not.toBeNull();
+    if (!instrument) return;
+
+    const strategy = await prisma.strategy.findUnique({ where: { key: "ema-trend-pullback" } });
+    expect(strategy).not.toBeNull();
+    if (!strategy) return;
+
+    const strategyVersion = await prisma.strategyVersion.findUnique({
+      where: { strategyId_version: { strategyId: strategy.id, version: "1.0.0" } },
+    });
+    expect(strategyVersion).not.toBeNull();
+    if (!strategyVersion) return;
+
+    const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+      instrumentId: instrument.id,
+      timestamp: new Date("2024-03-03T08:00:00.000Z"),
+      timeframe: "5m",
+      metadata: { integrationTest: true },
+    });
+
+    const setup = await setupsRepository.createSetup({
+      instrumentId: instrument.id,
+      strategyId: strategy.id,
+      strategyVersionId: strategyVersion.id,
+      marketSnapshotId: snapshot.id,
+      direction: "LONG",
+      source: "MANUAL_TEST",
+      plannedEntry: new Decimal("5205.5"),
+      plannedStop: new Decimal("5190"),
+      plannedTarget1: new Decimal("5235.5"),
+      metadata: { integrationTest: true },
+    });
+
+    const trade = await journalTradesRepository.createJournalTrade({
+      setupId: setup.id,
+      instrumentId: instrument.id,
+      strategyId: strategy.id,
+      strategyVersionId: strategyVersion.id,
+      direction: "LONG",
+      plannedEntry: new Decimal("5205.5"),
+      plannedStop: new Decimal("5190"),
+      plannedTarget1: new Decimal("5235.5"),
+      executionMode: "SKIPPED",
+      skipReason: "SETUP_NO_LONGER_VALID",
+    });
+    expect(trade.status).toBe("SKIPPED");
+
+    const events = await journalEventsRepository.listJournalEvents({ correlationId: setup.id });
+    const tradeSkippedEvent = events.find((event) => event.eventType === "TRADE_SKIPPED");
+    expect(tradeSkippedEvent).toBeDefined();
+    expect(tradeSkippedEvent?.metadata).toEqual({ skipReason: "SETUP_NO_LONGER_VALID" });
+  });
+
+  /**
+   * Same fix, the single-action "I ENTERED THIS TRADE"/"PAPER TRADE"
+   * dashboard path: createAndRecordJournalTradeEntry emits its own
+   * TRADE_EXECUTED (see that function's doc comment) and must carry the
+   * same metadata shape as recordJournalTradeEntry's.
+   */
+  it("createAndRecordJournalTradeEntry emits TRADE_EXECUTED with actualEntry/quantity metadata", async () => {
+    const instrument = await instrumentsRepository.findInstrumentBySymbolAndExchange("GENFUT1", "SIM-FUT");
+    expect(instrument).not.toBeNull();
+    if (!instrument) return;
+
+    const strategy = await prisma.strategy.findUnique({ where: { key: "ema-trend-pullback" } });
+    expect(strategy).not.toBeNull();
+    if (!strategy) return;
+
+    const strategyVersion = await prisma.strategyVersion.findUnique({
+      where: { strategyId_version: { strategyId: strategy.id, version: "1.0.0" } },
+    });
+    expect(strategyVersion).not.toBeNull();
+    if (!strategyVersion) return;
+
+    const snapshot = await marketSnapshotsRepository.createMarketSnapshot({
+      instrumentId: instrument.id,
+      timestamp: new Date("2024-03-04T08:00:00.000Z"),
+      timeframe: "5m",
+      metadata: { integrationTest: true },
+    });
+
+    const setup = await setupsRepository.createSetup({
+      instrumentId: instrument.id,
+      strategyId: strategy.id,
+      strategyVersionId: strategyVersion.id,
+      marketSnapshotId: snapshot.id,
+      direction: "LONG",
+      source: "MANUAL_TEST",
+      plannedEntry: new Decimal("5205.5"),
+      plannedStop: new Decimal("5190"),
+      plannedTarget1: new Decimal("5235.5"),
+      metadata: { integrationTest: true },
+    });
+
+    const actualEntry = new Decimal("5206");
+    const trade = await journalTradesRepository.createAndRecordJournalTradeEntry({
+      setupId: setup.id,
+      instrumentId: instrument.id,
+      strategyId: strategy.id,
+      strategyVersionId: strategyVersion.id,
+      direction: "LONG",
+      plannedEntry: new Decimal("5205.5"),
+      plannedStop: new Decimal("5190"),
+      plannedTarget1: new Decimal("5235.5"),
+      plannedTarget2: null,
+      plannedRisk: null,
+      executionMode: "PAPER",
+      actualEntry,
+      quantity: 3,
+      entryTimestamp: new Date("2024-03-04T09:00:00.000Z"),
+      actualFees: null,
+      actualSlippage: null,
+      notes: null,
+    });
+    expect(trade.status).toBe("OPEN");
+
+    const events = await journalEventsRepository.listJournalEvents({ correlationId: setup.id });
+    const tradeExecutedEvent = events.find((event) => event.eventType === "TRADE_EXECUTED");
+    expect(tradeExecutedEvent).toBeDefined();
+    expect(tradeExecutedEvent?.metadata).toEqual({ actualEntry: actualEntry.toString(), quantity: 3 });
   });
 
   it("emits STRATEGY_VERSION_PROPOSED when a new StrategyVersion is created", async () => {
