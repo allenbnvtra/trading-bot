@@ -568,25 +568,47 @@ describe("mapPostTradeAnalysis", () => {
 });
 
 describe("mapTradeScreenshot", () => {
-  it("maps a screenshot metadata row", () => {
-    const row: PrismaTradeScreenshotRow = {
+  it("maps every field, including nullable ones, without fabricating defaults", () => {
+    const row = {
+      id: "screenshot-1",
+      setupId: "setup-1",
+      tradeId: null,
+      tradeSource: null,
+      type: "PRE_TRADE" as const,
+      status: "READY" as const,
+      storageProvider: "LOCAL_DISK",
+      storageKey: "setups/setup-1/pre-trade/1.0.0.png",
+      mimeType: "image/png",
+      width: 1440,
+      height: 900,
+      marketSnapshotId: "snapshot-1",
+      chartConfigVersion: "1.0.0",
+      renderedAt: new Date("2026-09-23T00:00:00Z"),
+      failureCode: null,
+      failureMessage: null,
+      createdAt: new Date("2026-09-23T00:00:00Z"),
+      updatedAt: new Date("2026-09-23T00:00:00Z"),
+    };
+
+    expect(mapTradeScreenshot(row)).toEqual({
       id: "screenshot-1",
       setupId: "setup-1",
       tradeId: null,
       tradeSource: null,
       type: "PRE_TRADE",
-      storageKey: "local://screenshots/setup-1-pre.png",
+      status: "READY",
+      storageProvider: "LOCAL_DISK",
+      storageKey: "setups/setup-1/pre-trade/1.0.0.png",
       mimeType: "image/png",
-      width: 1920,
-      height: 1080,
+      width: 1440,
+      height: 900,
       marketSnapshotId: "snapshot-1",
-      chartConfigVersion: "v1",
-      createdAt: new Date("2024-02-03T08:00:00.000Z"),
-    };
-
-    const screenshot = mapTradeScreenshot(row);
-    expect(screenshot.type).toBe("PRE_TRADE");
-    expect(screenshot.width).toBe(1920);
-    expect(screenshot.tradeId).toBeNull();
+      chartConfigVersion: "1.0.0",
+      renderedAt: new Date("2026-09-23T00:00:00Z"),
+      failureCode: null,
+      failureMessage: null,
+      createdAt: new Date("2026-09-23T00:00:00Z"),
+      updatedAt: new Date("2026-09-23T00:00:00Z"),
+    });
   });
 });

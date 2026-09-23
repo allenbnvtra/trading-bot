@@ -18,7 +18,7 @@ export interface CreateTradeScreenshotInput {
   width?: number | null;
   height?: number | null;
   marketSnapshotId?: string | null;
-  chartConfigVersion?: string | null;
+  chartConfigVersion: string;
 }
 
 export async function createTradeScreenshot(
@@ -35,7 +35,7 @@ export async function createTradeScreenshot(
       width: input.width ?? null,
       height: input.height ?? null,
       marketSnapshotId: input.marketSnapshotId ?? null,
-      chartConfigVersion: input.chartConfigVersion ?? null,
+      chartConfigVersion: input.chartConfigVersion,
     },
   });
   return mapTradeScreenshot(row);

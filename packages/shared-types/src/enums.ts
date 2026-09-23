@@ -184,6 +184,11 @@ export const JOURNAL_EVENT_TYPES = [
   "WEBHOOK_DUPLICATE_DETECTED",
   "WEBHOOK_REJECTED",
   "WEBHOOK_PROCESSING_FAILED",
+  // Milestone 5 — screenshot generation lifecycle. See docs/screenshot-design.md.
+  "SCREENSHOT_REQUESTED",
+  "SCREENSHOT_GENERATION_STARTED",
+  "SCREENSHOT_CREATED",
+  "SCREENSHOT_FAILED",
 ] as const;
 export type JournalEventType = (typeof JOURNAL_EVENT_TYPES)[number];
 
@@ -198,12 +203,23 @@ export const JOURNAL_ENTITY_TYPES = [
   "STRATEGY_VERSION",
   "POST_TRADE_ANALYSIS",
   "INBOUND_WEBHOOK_EVENT",
+  "TRADE_SCREENSHOT",
 ] as const;
 export type JournalEntityType = (typeof JOURNAL_ENTITY_TYPES)[number];
 
 /** Screenshot capture point (see docs/screenshot-design.md). Schema foundation only in Milestone 2. */
 export const SCREENSHOT_TYPES = ["PRE_TRADE", "POST_TRADE"] as const;
 export type ScreenshotType = (typeof SCREENSHOT_TYPES)[number];
+
+/**
+ * Milestone 5: a TradeScreenshot's generation lifecycle (see
+ * docs/screenshot-design.md). REQUESTED -> GENERATING -> READY|FAILED. A
+ * READY row is immutable historical evidence — a behavior change (e.g. a
+ * chart-rendering config change) bumps chartConfigVersion and creates a new
+ * row rather than mutating an existing one.
+ */
+export const SCREENSHOT_STATUSES = ["REQUESTED", "GENERATING", "READY", "FAILED"] as const;
+export type ScreenshotStatus = (typeof SCREENSHOT_STATUSES)[number];
 
 /**
  * Milestone 3: TradingView webhook ingestion. Provider is its own enum

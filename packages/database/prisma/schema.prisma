@@ -352,6 +352,11 @@ enum JournalEventType {
   WEBHOOK_DUPLICATE_DETECTED
   WEBHOOK_REJECTED
   WEBHOOK_PROCESSING_FAILED
+  // Milestone 5 — screenshot generation lifecycle. See docs/screenshot-design.md.
+  SCREENSHOT_REQUESTED
+  SCREENSHOT_GENERATION_STARTED
+  SCREENSHOT_CREATED
+  SCREENSHOT_FAILED
 }
 
 enum JournalEntityType {
@@ -364,11 +369,19 @@ enum JournalEntityType {
   STRATEGY_VERSION
   POST_TRADE_ANALYSIS
   INBOUND_WEBHOOK_EVENT
+  TRADE_SCREENSHOT
 }
 
 enum ScreenshotType {
   PRE_TRADE
   POST_TRADE
+}
+
+enum ScreenshotStatus {
+  REQUESTED
+  GENERATING
+  READY
+  FAILED
 }
 
 enum WebhookProvider {
@@ -651,8 +664,15 @@ model PostTradeAnalysis {
   @@index([tradeId, tradeSource])
 }
 
-// Metadata only — see docs/screenshot-design.md. No renderer/capture
-// pipeline exists yet; this is schema foundation for Milestone 5.
+// Metadata only — see docs/screenshot-design.md. Milestone 5: a real
+// renderer/Playwright pipeline now populates this. A READY row is
+// immutable historical evidence (docs/architecture.md); a behavior change
+// bumps chartConfigVersion and creates a NEW row rather than mutating an
+// old one — the two @@unique constraints below are what make that
+// immutability a database guarantee, not just a convention. Postgres
+// treats NULL as distinct from every other NULL for uniqueness purposes,
+// so a PRE_TRADE row (tradeId/tradeSource always null) never collides with
+// the tradeId-based constraint, and vice versa for a POST_TRADE row.
 model TradeScreenshot {
   id String @id @default(uuid())
 
@@ -662,21 +682,32 @@ model TradeScreenshot {
   tradeId     String?
   tradeSource TradeSource?
 
-  type ScreenshotType
+  type   ScreenshotType
+  status ScreenshotStatus @default(REQUESTED)
 
-  storageKey String
-  mimeType   String
-  width      Int?
-  height     Int?
+  storageProvider String  @default("LOCAL_DISK")
+  storageKey      String?
+  mimeType        String?
+  width           Int?
+  height          Int?
 
   marketSnapshotId String?
 
-  chartConfigVersion String?
+  chartConfigVersion String
+
+  renderedAt DateTime?
+
+  failureCode    String?
+  failureMessage String?
 
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
+  @@unique([setupId, type, chartConfigVersion])
+  @@unique([tradeId, tradeSource, type, chartConfigVersion])
   @@index([tradeId, tradeSource])
   @@index([setupId])
+  @@index([status])
 }
 
 // ---------------------------------------------------------------------------

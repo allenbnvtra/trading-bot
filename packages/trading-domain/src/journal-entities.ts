@@ -7,6 +7,7 @@ import type {
   JournalTradeStatus,
   LossCategory,
   PostTradeOutcome,
+  ScreenshotStatus,
   ScreenshotType,
   SetupSource,
   SetupStatus,
@@ -257,8 +258,13 @@ export interface NormalizedTrade {
 
 /**
  * Screenshot metadata only — the image itself lives in object storage (see
- * docs/screenshot-design.md), never as a blob in Postgres. Schema
- * foundation only in Milestone 2; no renderer/capture pipeline exists yet.
+ * docs/screenshot-design.md), never as a blob in Postgres. Milestone 5: a
+ * real renderer/Playwright pipeline populates this via a genuine generation
+ * lifecycle (REQUESTED -> GENERATING -> READY|FAILED). A READY row is
+ * immutable historical evidence — a behavior change bumps
+ * chartConfigVersion and creates a new row rather than mutating an old one
+ * (enforced in the database by the two @@unique constraints on the
+ * TradeScreenshot model, not just by convention).
  */
 export interface TradeScreenshot {
   id: string;
@@ -266,11 +272,17 @@ export interface TradeScreenshot {
   tradeId: string | null;
   tradeSource: TradeSource | null;
   type: ScreenshotType;
-  storageKey: string;
-  mimeType: string;
+  status: ScreenshotStatus;
+  storageProvider: string;
+  storageKey: string | null;
+  mimeType: string | null;
   width: number | null;
   height: number | null;
   marketSnapshotId: string | null;
-  chartConfigVersion: string | null;
+  chartConfigVersion: string;
+  renderedAt: Date | null;
+  failureCode: string | null;
+  failureMessage: string | null;
   createdAt: Date;
+  updatedAt: Date;
 }

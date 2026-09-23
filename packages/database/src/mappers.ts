@@ -28,6 +28,7 @@ import type {
   JournalTradeStatus,
   LossCategory,
   PostTradeOutcome,
+  ScreenshotStatus,
   ScreenshotType,
   SetupSource,
   SetupStatus,
@@ -663,13 +664,19 @@ export interface PrismaTradeScreenshotRow {
   tradeId: string | null;
   tradeSource: TradeSource | null;
   type: ScreenshotType;
-  storageKey: string;
-  mimeType: string;
+  status: ScreenshotStatus;
+  storageProvider: string;
+  storageKey: string | null;
+  mimeType: string | null;
   width: number | null;
   height: number | null;
   marketSnapshotId: string | null;
-  chartConfigVersion: string | null;
+  chartConfigVersion: string;
+  renderedAt: Date | null;
+  failureCode: string | null;
+  failureMessage: string | null;
   createdAt: Date;
+  updatedAt: Date;
 }
 
 export function mapTradeScreenshot(row: PrismaTradeScreenshotRow): TradeScreenshot {
@@ -679,13 +686,19 @@ export function mapTradeScreenshot(row: PrismaTradeScreenshotRow): TradeScreensh
     tradeId: row.tradeId,
     tradeSource: row.tradeSource,
     type: row.type,
+    status: row.status,
+    storageProvider: row.storageProvider,
     storageKey: row.storageKey,
     mimeType: row.mimeType,
     width: row.width,
     height: row.height,
     marketSnapshotId: row.marketSnapshotId,
     chartConfigVersion: row.chartConfigVersion,
+    renderedAt: row.renderedAt,
+    failureCode: row.failureCode,
+    failureMessage: row.failureMessage,
     createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
   };
 }
 
