@@ -467,5 +467,15 @@ describe("SetupService", () => {
       await expect(service.skip("missing", {})).rejects.toBeInstanceOf(NotFoundException);
       expect(journalTradesRepository.createJournalTrade).not.toHaveBeenCalled();
     });
+
+    it("rejects skip for a Setup not in READY status", async () => {
+      const setup = makeSetup({ id: "setup-1", status: "PREPARE" });
+      setupsRepository.getSetup.mockResolvedValue(setup);
+
+      await expect(service.skip("setup-1", { reason: "PRICE_MOVED" })).rejects.toBeInstanceOf(
+        ConflictException,
+      );
+      expect(journalTradesRepository.createJournalTrade).not.toHaveBeenCalled();
+    });
   });
 });

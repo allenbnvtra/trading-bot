@@ -261,6 +261,9 @@ export class SetupService {
    */
   async skip(setupId: string, input: SkipSetupInput): Promise<JournalTrade> {
     const setup = await this.getById(setupId);
+    if (setup.status !== "READY") {
+      throw new ConflictException(`Setup ${setupId} is not READY — cannot record a skip against it`);
+    }
     return journalTradesRepository.createJournalTrade({
       setupId: setup.id,
       instrumentId: setup.instrumentId,
