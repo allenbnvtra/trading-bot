@@ -1,9 +1,12 @@
 import Decimal from "decimal.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { ConflictException } from "@nestjs/common";
 import { ResearchBudgetExceededError } from "@trading-copilot/database";
+import type { EnrichedJournalTrade } from "@trading-copilot/analytics";
+import type { ResearchExperiment, StrategyVersion } from "@trading-copilot/trading-domain";
 import { ResearchService } from "./research.service";
 
-const { researchRepository } = vi.hoisted(() => ({
+const { researchRepository, strategiesRepository } = vi.hoisted(() => ({
   researchRepository: {
     getTodayResearchSpend: vi.fn(),
     createAgentExecution: vi.fn(),
@@ -13,6 +16,10 @@ const { researchRepository } = vi.hoisted(() => ({
     listResearchExperimentsForHypothesis: vi.fn(),
     getAgentExecution: vi.fn(),
     createResearchExperiment: vi.fn(),
+  },
+  strategiesRepository: {
+    findStrategyVersionBySourceHypothesis: vi.fn(),
+    markPaperCandidate: vi.fn(),
   },
 }));
 
@@ -24,7 +31,7 @@ const { researchRepository } = vi.hoisted(() => ({
 // module-level imports, never constructor parameters.
 vi.mock("@trading-copilot/database", async () => {
   const actual = await vi.importActual<typeof import("@trading-copilot/database")>("@trading-copilot/database");
-  return { ...actual, researchRepository };
+  return { ...actual, researchRepository, strategiesRepository };
 });
 
 const RESEARCH_DAILY_TOKEN_BUDGET_ENV = "RESEARCH_DAILY_TOKEN_BUDGET";
@@ -48,5 +55,181 @@ describe("ResearchService.generateHypothesis", () => {
     expect(queueAdd).not.toHaveBeenCalled();
 
     delete process.env[RESEARCH_DAILY_TOKEN_BUDGET_ENV];
+  });
+});
+
+function makeExperiment(overrides: Partial<ResearchExperiment> = {}): ResearchExperiment {
+  return {
+    id: overrides.id ?? "experiment-1",
+    hypothesisId: "hypothesis-1",
+    datasetRole: "FINAL_TEST",
+    datasetWindowStart: new Date("2026-01-01T00:00:00.000Z"),
+    datasetWindowEnd: new Date("2026-03-01T00:00:00.000Z"),
+    backtestId: "backtest-1",
+    status: "COMPLETED",
+    failureReason: null,
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    completedAt: new Date("2026-03-01T00:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function makeStrategyVersion(overrides: Partial<StrategyVersion> = {}): StrategyVersion {
+  return {
+    id: "strategy-version-1",
+    strategyId: "strategy-1",
+    version: "hypothesis-1",
+    name: "AI hypothesis",
+    description: "",
+    parameters: {},
+    status: "WALK_FORWARD",
+    createdAt: new Date("2026-01-01T00:00:00.000Z"),
+    sourceHypothesisId: "hypothesis-1",
+    ...overrides,
+  };
+}
+
+function makeTrade(overrides: Partial<EnrichedJournalTrade> = {}): EnrichedJournalTrade {
+  return {
+    source: "JOURNAL",
+    id: overrides.id ?? "trade",
+    strategyId: "strategy-1",
+    strategyVersionId: "strategy-version-1",
+    instrumentId: "instrument-1",
+    direction: "LONG",
+    executionMode: "MANUAL_LIVE",
+    entryTimestamp: new Date("2026-01-01T00:00:00.000Z"),
+    exitTimestamp: new Date("2026-01-01T01:00:00.000Z"),
+    entryPrice: new Decimal(100),
+    exitPrice: new Decimal(101),
+    quantity: 1,
+    grossPnl: new Decimal(100),
+    fees: new Decimal(4),
+    netPnl: new Decimal(96),
+    riskAmount: new Decimal(50),
+    rMultiple: new Decimal(1.92),
+    mfe: new Decimal(2),
+    mae: new Decimal(0.5),
+    slippage: null,
+    context: null,
+    ...overrides,
+  };
+}
+
+/** Enough trades, spread across enough calendar days, to satisfy assertSampleSizeGuardrails (MINIMUM_CANDIDATE_SETUPS=100, MINIMUM_CALENDAR_DAYS=60). */
+function makeMatureTradeSet(): EnrichedJournalTrade[] {
+  return Array.from({ length: 130 }, (_, i) => {
+    const dayOffset = Math.floor(i / 2);
+    return makeTrade({
+      id: `trade-${i}`,
+      entryTimestamp: new Date(Date.UTC(2026, 0, 1 + dayOffset)),
+      exitTimestamp: new Date(Date.UTC(2026, 0, 1 + dayOffset, 1)),
+    });
+  });
+}
+
+describe("ResearchService.markPaperCandidate", () => {
+  let service: ResearchService;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    service = new ResearchService({ add: vi.fn() } as never);
+  });
+
+  it("throws when FINAL_TEST/WALK_FORWARD experiments are not both COMPLETED", async () => {
+    researchRepository.listResearchExperimentsForHypothesis.mockResolvedValue([
+      makeExperiment({ datasetRole: "FINAL_TEST", status: "COMPLETED" }),
+    ]);
+
+    await expect(service.markPaperCandidate("hypothesis-1", "strategy-version-1")).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(strategiesRepository.findStrategyVersionBySourceHypothesis).not.toHaveBeenCalled();
+    expect(strategiesRepository.markPaperCandidate).not.toHaveBeenCalled();
+  });
+
+  it("throws when strategyVersionId does not belong to this hypothesis (BLOCKER fix)", async () => {
+    researchRepository.listResearchExperimentsForHypothesis.mockResolvedValue([
+      makeExperiment({ datasetRole: "FINAL_TEST", status: "COMPLETED" }),
+      makeExperiment({ id: "experiment-2", datasetRole: "WALK_FORWARD", status: "COMPLETED" }),
+    ]);
+    // This hypothesis's own StrategyVersion is "strategy-version-1", but the
+    // caller passes a different id ("some-unrelated-strategy-version") that
+    // independently happens to be WALK_FORWARD for a different hypothesis.
+    strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(makeStrategyVersion());
+
+    await expect(
+      service.markPaperCandidate("hypothesis-1", "some-unrelated-strategy-version"),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(researchRepository.listEnrichedJournalTradesForResearch).not.toHaveBeenCalled();
+    expect(strategiesRepository.markPaperCandidate).not.toHaveBeenCalled();
+  });
+
+  it("throws when this hypothesis has no StrategyVersion of its own", async () => {
+    researchRepository.listResearchExperimentsForHypothesis.mockResolvedValue([
+      makeExperiment({ datasetRole: "FINAL_TEST", status: "COMPLETED" }),
+      makeExperiment({ id: "experiment-2", datasetRole: "WALK_FORWARD", status: "COMPLETED" }),
+    ]);
+    strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(null);
+
+    await expect(service.markPaperCandidate("hypothesis-1", "strategy-version-1")).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(strategiesRepository.markPaperCandidate).not.toHaveBeenCalled();
+  });
+
+  it("throws when sample-size guardrails are not met over the combined dataset window", async () => {
+    researchRepository.listResearchExperimentsForHypothesis.mockResolvedValue([
+      makeExperiment({ datasetRole: "FINAL_TEST", status: "COMPLETED" }),
+      makeExperiment({ id: "experiment-2", datasetRole: "WALK_FORWARD", status: "COMPLETED" }),
+    ]);
+    strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(makeStrategyVersion());
+    researchRepository.listEnrichedJournalTradesForResearch.mockResolvedValue([]);
+
+    await expect(service.markPaperCandidate("hypothesis-1", "strategy-version-1")).rejects.toBeInstanceOf(
+      ConflictException,
+    );
+    expect(strategiesRepository.markPaperCandidate).not.toHaveBeenCalled();
+  });
+
+  it("derives the combined dataset window from every experiment and promotes when ownership and guardrails both pass", async () => {
+    const experiments = [
+      makeExperiment({
+        id: "experiment-research",
+        datasetRole: "RESEARCH",
+        status: "COMPLETED",
+        datasetWindowStart: new Date("2025-11-01T00:00:00.000Z"),
+        datasetWindowEnd: new Date("2025-12-01T00:00:00.000Z"),
+      }),
+      makeExperiment({
+        id: "experiment-final-test",
+        datasetRole: "FINAL_TEST",
+        status: "COMPLETED",
+        datasetWindowStart: new Date("2026-01-01T00:00:00.000Z"),
+        datasetWindowEnd: new Date("2026-03-01T00:00:00.000Z"),
+      }),
+      makeExperiment({
+        id: "experiment-walk-forward",
+        datasetRole: "WALK_FORWARD",
+        status: "COMPLETED",
+        datasetWindowStart: new Date("2026-03-01T00:00:00.000Z"),
+        datasetWindowEnd: new Date("2026-05-01T00:00:00.000Z"),
+      }),
+    ];
+    researchRepository.listResearchExperimentsForHypothesis.mockResolvedValue(experiments);
+    strategiesRepository.findStrategyVersionBySourceHypothesis.mockResolvedValue(makeStrategyVersion());
+    researchRepository.listEnrichedJournalTradesForResearch.mockResolvedValue(makeMatureTradeSet());
+    strategiesRepository.markPaperCandidate.mockResolvedValue(makeStrategyVersion({ status: "PAPER_CANDIDATE" }));
+
+    await service.markPaperCandidate("hypothesis-1", "strategy-version-1");
+
+    // The earliest datasetWindowStart (RESEARCH, 2025-11-01) and latest
+    // datasetWindowEnd (WALK_FORWARD, 2026-05-01) across all three
+    // experiments, not just the FINAL_TEST/WALK_FORWARD pair.
+    expect(researchRepository.listEnrichedJournalTradesForResearch).toHaveBeenCalledWith({
+      windowStart: new Date("2025-11-01T00:00:00.000Z"),
+      windowEnd: new Date("2026-05-01T00:00:00.000Z"),
+    });
+    expect(strategiesRepository.markPaperCandidate).toHaveBeenCalledWith("strategy-version-1");
   });
 });

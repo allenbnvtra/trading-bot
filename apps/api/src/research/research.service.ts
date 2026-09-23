@@ -200,13 +200,30 @@ export class ResearchService {
   /**
    * Human-triggered only (see markPaperCandidateRequestSchema's
    * confirmedByHuman: true literal). Nothing in this service auto-promotes
-   * a StrategyVersion. Requires a COMPLETED WALK_FORWARD experiment and a
-   * COMPLETED FINAL_TEST experiment to already exist for this hypothesis.
-   * Uses an atomic conditional update (status must currently be
-   * WALK_FORWARD): see strategiesRepository.markPaperCandidate's doc
-   * comment, following the exact atomic-updateMany-then-recheck pattern
-   * from journal-trades.ts's closeJournalTrade (the Milestone 6
-   * technical-debt pass).
+   * a StrategyVersion. Requires, in order:
+   *
+   * 1. A COMPLETED WALK_FORWARD experiment and a COMPLETED FINAL_TEST
+   *    experiment to already exist for this hypothesis.
+   * 2. `strategyVersionId` to actually be the StrategyVersion this
+   *    hypothesis produced (via findStrategyVersionBySourceHypothesis), not
+   *    merely some unrelated StrategyVersion that independently happens to
+   *    be WALK_FORWARD. Without this check, step 1's two-experiment gate
+   *    would be meaningless: it would only prove hypothesisId has
+   *    qualifying experiments, never that strategyVersionId is the
+   *    strategy those experiments were actually run against.
+   * 3. Sample-size guardrails to pass over the combined dataset window this
+   *    hypothesis's experiments actually covered (see the inline comment
+   *    below for how that window is derived), per
+   *    docs/research-methodology.md and assertSampleSizeGuardrails' own doc
+   *    comment in packages/analytics/src/research-summary.ts, both of which
+   *    document this guardrail as gating the PAPER_CANDIDATE transition,
+   *    not only experiment creation.
+   *
+   * Only once all three pass does this call the atomic conditional update
+   * (status must currently be WALK_FORWARD): see
+   * strategiesRepository.markPaperCandidate's doc comment, following the
+   * exact atomic-updateMany-then-recheck pattern from journal-trades.ts's
+   * closeJournalTrade (the Milestone 6 technical-debt pass).
    */
   async markPaperCandidate(hypothesisId: string, strategyVersionId: string): Promise<void> {
     const experiments = await researchRepository.listResearchExperimentsForHypothesis(hypothesisId);
@@ -217,6 +234,48 @@ export class ResearchService {
     if (!hasCompletedFinalTest || !hasCompletedWalkForward) {
       throw new ConflictException(
         "PAPER_CANDIDATE requires a COMPLETED FINAL_TEST experiment and a COMPLETED WALK_FORWARD experiment",
+      );
+    }
+
+    // Ownership check (see the doc comment above, point 2). This is the fix
+    // for the reviewed BLOCKER: `strategyVersionId` is a caller-supplied URL
+    // param and must be verified against what this hypothesis actually
+    // produced, not trusted as-is.
+    const ownedVersion = await strategiesRepository.findStrategyVersionBySourceHypothesis(hypothesisId);
+    if (!ownedVersion || ownedVersion.id !== strategyVersionId) {
+      throw new ConflictException(
+        `StrategyVersion ${strategyVersionId} does not belong to hypothesis ${hypothesisId}`,
+      );
+    }
+
+    // Sample-size guardrails over the combined dataset window (point 3
+    // above). Derived from this hypothesis's own experiments: the earliest
+    // datasetWindowStart and the latest datasetWindowEnd across every
+    // experiment stage it has run (RESEARCH through WALK_FORWARD), mirroring
+    // buildResearchDataSummary's own Math.min/Math.max derivation of a
+    // sample window from trade timestamps, rather than an arbitrary or
+    // unrelated window. `experiments` is guaranteed non-empty here (the
+    // FINAL_TEST/WALK_FORWARD check above already required at least two).
+    // Reuses the same unscoped, system-wide trade query as
+    // createExperiment's guardrail check (see that method's doc comment):
+    // ResearchHypothesis/ResearchExperiment carry no strategyId/instrumentId
+    // column to scope by.
+    const windowStart = new Date(Math.min(...experiments.map((e) => e.datasetWindowStart.getTime())));
+    const windowEnd = new Date(Math.max(...experiments.map((e) => e.datasetWindowEnd.getTime())));
+    const trades = await researchRepository.listEnrichedJournalTradesForResearch({ windowStart, windowEnd });
+    const guardrails = assertSampleSizeGuardrails(buildResearchDataSummary(trades));
+    if (!guardrails.passes) {
+      // ConflictException, not ResearchStageOrderError: unlike
+      // createExperiment (which really is creating a new ResearchExperiment,
+      // so ResearchStageOrderError's "Cannot create a {role} experiment..."
+      // message is accurate), this method never creates an experiment, it
+      // transitions a StrategyVersion's status. Reusing ResearchStageOrderError
+      // here would produce a misleading message. ConflictException also
+      // keeps this method internally consistent: all three of its
+      // precondition failures (missing experiments, ownership mismatch,
+      // guardrails) throw the same exception type.
+      throw new ConflictException(
+        `PAPER_CANDIDATE requires sample-size guardrails to pass over the combined dataset window: ${guardrails.reasons.join("; ")}`,
       );
     }
 
