@@ -15,12 +15,16 @@ import {
   createPreTradeScreenshotSchema,
   createRiskCalculationSchema,
   createSetupSchema,
+  executeSetupSchema,
   setupListQuerySchema,
+  skipSetupSchema,
   updateSetupStatusSchema,
   type CreatePreTradeScreenshotInput,
   type CreateRiskCalculationInput,
   type CreateSetupInput,
+  type ExecuteSetupInput,
   type SetupListQuery,
+  type SkipSetupInput,
   type UpdateSetupStatusInput,
 } from "@trading-copilot/shared-types";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
@@ -63,6 +67,22 @@ export class SetupController {
   @Get(":id/timeline")
   getTimeline(@Param("id", new ParseUUIDPipe()) id: string) {
     return this.setupService.getTimeline(id);
+  }
+
+  @Post(":id/execute")
+  execute(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Body(new ZodValidationPipe(executeSetupSchema)) body: ExecuteSetupInput,
+  ) {
+    return this.setupService.execute(id, body);
+  }
+
+  @Post(":id/skip")
+  skip(
+    @Param("id", new ParseUUIDPipe()) id: string,
+    @Body(new ZodValidationPipe(skipSetupSchema)) body: SkipSetupInput,
+  ) {
+    return this.setupService.skip(id, body);
   }
 
   @Post(":id/risk-calculations")

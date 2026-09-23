@@ -1,7 +1,8 @@
-import { Injectable, Logger, NotFoundException } from "@nestjs/common";
+import { ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import Decimal from "decimal.js";
 import {
   journalEventsRepository,
+  journalTradesRepository,
   notificationDeliveriesRepository,
   riskCalculationsRepository,
   setupsRepository,
@@ -9,10 +10,12 @@ import {
 import type {
   CreateRiskCalculationInput,
   CreateSetupInput,
+  ExecuteSetupInput,
   SetupListQuery,
+  SkipSetupInput,
   UpdateSetupStatusInput,
 } from "@trading-copilot/shared-types";
-import type { JournalEvent, RiskCalculation, Setup } from "@trading-copilot/trading-domain";
+import type { JournalEvent, JournalTrade, RiskCalculation, Setup } from "@trading-copilot/trading-domain";
 import { NotificationService } from "../notifications/notification.service";
 import { ScreenshotService } from "../screenshots/screenshot.service";
 
@@ -163,5 +166,86 @@ export class SetupService {
       throw new NotFoundException(`No risk calculation exists for setup ${id}`);
     }
     return calculation;
+  }
+
+  /**
+   * The dashboard's single-action "PAPER TRADE" / "I ENTERED THIS TRADE"
+   * button: creates and records an OPEN JournalTrade atomically, sourced
+   * from the Setup's own planned values — never re-supplied by the caller,
+   * so what gets journaled always matches what was actually approved.
+   *
+   * plannedStop fallback: `transitionSetupStatus`
+   * (packages/database/src/repositories/setups.ts) enforces only the
+   * WATCH/PREPARE/READY/... state-machine matrix (ALLOWED_TRANSITIONS) — it
+   * has no precondition requiring plannedStop/plannedTarget1 to be non-null
+   * before a Setup can reach READY. A TradingView-sourced Setup (Milestone
+   * 3) can therefore be READY with only a candidate entry known (see
+   * CreateSetupInput's own doc comment on plannedStop in setups.ts). Since
+   * JournalTrade.plannedStop is a required column, falling back to
+   * plannedEntry is real behavior here, not dead code — confirmed by
+   * reading transitionSetupStatus before writing this, per this task's
+   * brief. If a stricter precondition is added to the READY transition
+   * later, this fallback becomes unreachable and should be deleted then.
+   */
+  async execute(setupId: string, input: ExecuteSetupInput): Promise<JournalTrade> {
+    const setup = await this.getById(setupId);
+    if (setup.status !== "READY") {
+      throw new ConflictException(`Setup ${setupId} is not READY — cannot record an execution against it`);
+    }
+
+    // estimatedTotalRisk (riskPerUnit * calculatedQuantity), not riskBudget
+    // (the theoretical account-level allocation e.g. 1% of equity): the
+    // former is the actual computed dollar risk for the sized position,
+    // which is what rMultiple needs at close time to normalize netPnl. The
+    // latest calculation is best-effort — a READY setup with no
+    // RiskCalculation on file still executes, just without a real rMultiple
+    // baseline (see computeJournalTradeClose's "never fabricated as 0" note).
+    const latestRiskCalculation = await riskCalculationsRepository.getLatestRiskCalculation(setupId);
+    const plannedRisk = latestRiskCalculation ? new Decimal(latestRiskCalculation.estimatedTotalRisk.toString()) : null;
+
+    return journalTradesRepository.createAndRecordJournalTradeEntry({
+      setupId: setup.id,
+      instrumentId: setup.instrumentId,
+      strategyId: setup.strategyId,
+      strategyVersionId: setup.strategyVersionId,
+      direction: setup.direction,
+      plannedEntry: setup.plannedEntry,
+      plannedStop: setup.plannedStop ?? setup.plannedEntry,
+      plannedTarget1: setup.plannedTarget1,
+      plannedTarget2: setup.plannedTarget2,
+      plannedRisk,
+      executionMode: input.executionMode,
+      actualEntry: new Decimal(input.actualEntry),
+      quantity: input.quantity,
+      entryTimestamp: new Date(input.entryTimestamp),
+      actualFees: input.actualFees ? new Decimal(input.actualFees) : null,
+      actualSlippage: input.actualSlippage ? new Decimal(input.actualSlippage) : null,
+      notes: input.notes ?? null,
+    });
+  }
+
+  /**
+   * Records a deliberate "did not take this trade" decision. This is about
+   * the trade decision, not the Setup's own lifecycle — a skipped READY
+   * setup is left exactly as it was and can still separately
+   * expire/invalidate on its own terms via updateStatus.
+   */
+  async skip(setupId: string, input: SkipSetupInput): Promise<JournalTrade> {
+    const setup = await this.getById(setupId);
+    return journalTradesRepository.createJournalTrade({
+      setupId: setup.id,
+      instrumentId: setup.instrumentId,
+      strategyId: setup.strategyId,
+      strategyVersionId: setup.strategyVersionId,
+      direction: setup.direction,
+      plannedEntry: setup.plannedEntry,
+      plannedStop: setup.plannedStop ?? setup.plannedEntry,
+      plannedTarget1: setup.plannedTarget1,
+      plannedTarget2: setup.plannedTarget2,
+      plannedRisk: null,
+      executionMode: "SKIPPED",
+      skipReason: input.reason ?? null,
+      entryNotes: null,
+    });
   }
 }
