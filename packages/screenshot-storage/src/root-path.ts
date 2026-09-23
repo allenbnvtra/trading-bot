@@ -10,9 +10,7 @@ import { dirname, isAbsolute, resolve } from "node:path";
  * returning the wrong directory would be worse than failing loudly.
  */
 function findMonorepoRoot(startDir: string): string {
-  let dir = startDir;
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
+  for (let dir = startDir; ; dir = dirname(dir)) {
     if (existsSync(resolve(dir, "pnpm-workspace.yaml"))) {
       return dir;
     }
@@ -22,7 +20,6 @@ function findMonorepoRoot(startDir: string): string {
         `Could not locate monorepo root (pnpm-workspace.yaml) walking up from ${startDir}`,
       );
     }
-    dir = parent;
   }
 }
 
