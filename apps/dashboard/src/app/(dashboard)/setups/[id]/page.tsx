@@ -4,15 +4,18 @@ import {
   ApiError,
   getMarketSnapshot,
   getSetup,
+  getSetupScreenshots,
   getSetupTimeline,
   getWebhookEventTimeline,
   getWebhookEvents,
   type JournalEvent,
   type MarketSnapshot,
+  type TradeScreenshot,
 } from "@/lib/api";
 import { formatDateTime, formatDecimal } from "@/lib/format";
 import { DirectionBadge, SetupSourceBadge, SetupStatusBadge } from "@/components/StatusBadge";
 import EventTimeline from "@/components/EventTimeline";
+import { ScreenshotsSection } from "@/components/ScreenshotCard";
 
 /** Renders a nullable planned price. Never "$0" or a blank cell - null means genuinely unknown, not zero. */
 function plannedPriceValue(value: string | null): string {
@@ -59,6 +62,16 @@ export default async function SetupDetailPage({ params }: { params: Promise<{ id
     } catch {
       // Cross-link omitted, not fabricated.
     }
+  }
+
+  // Best-effort, same as webhookEventId above: a screenshots-fetch failure
+  // never blocks rendering the Setup itself, it just leaves the section
+  // showing an empty list.
+  let screenshots: TradeScreenshot[] = [];
+  try {
+    screenshots = await getSetupScreenshots(id);
+  } catch {
+    // Rendered as "no screenshots" below - never fabricated.
   }
 
   // GET /setups/:id/timeline only returns JournalEvents correlated on the
@@ -178,6 +191,8 @@ export default async function SetupDetailPage({ params }: { params: Promise<{ id
           </p>
         )}
       </div>
+
+      <ScreenshotsSection owner={{ kind: "setup", setupId: id }} initialScreenshots={screenshots} />
 
       <div className="card">
         <h2>Timeline</h2>

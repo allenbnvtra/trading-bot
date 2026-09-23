@@ -1,20 +1,27 @@
 "use client";
 
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   getMarketSnapshot,
   getSetup,
+  getSetupScreenshots,
   getSetups,
   type MarketSnapshot,
   type RealtimeEvent,
   type Setup,
+  type TradeScreenshot,
 } from "@/lib/api";
 import { formatDateTime, formatDecimal } from "@/lib/format";
 import { useRealtimeEvents } from "@/lib/realtime";
-import { DirectionBadge, SetupSourceBadge, SetupStatusBadge } from "@/components/StatusBadge";
+import { DirectionBadge, ScreenshotStatusBadge, SetupSourceBadge, SetupStatusBadge } from "@/components/StatusBadge";
 import ConnectionIndicator from "@/components/ConnectionIndicator";
+
+// Mirrors lib/api.ts's/lib/realtime.ts's own local NEXT_PUBLIC_API_BASE_URL
+// convention (see ScreenshotCard.tsx for the fuller note on why this file
+// never imports @trading-copilot/shared-types instead).
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
 
 /**
  * Live TradingView-sourced Setups. Update strategy (documented per the
@@ -73,6 +80,39 @@ export default function LiveSetupsClient({
     });
   }, []);
 
+  // Lazily fetches the PRE_TRADE screenshot (if any) for one Setup, mirroring
+  // ensureSnapshot's exact caching/dedup strategy above (a ref of in-flight
+  // ids plus a functional setState check-then-fetch) rather than a second,
+  // different caching approach for this one column. Keyed by setupId, not
+  // marketSnapshotId, since a screenshot's idempotency key is
+  // (setupId, type, chartConfigVersion).
+  const [preTradeScreenshots, setPreTradeScreenshots] = useState<
+    Record<string, TradeScreenshot | null>
+  >({});
+  const pendingScreenshotSetupIds = useRef<Set<string>>(new Set());
+
+  const ensureScreenshot = useCallback((setupId: string) => {
+    setPreTradeScreenshots((current) => {
+      if (setupId in current || pendingScreenshotSetupIds.current.has(setupId)) {
+        return current;
+      }
+      pendingScreenshotSetupIds.current.add(setupId);
+      getSetupScreenshots(setupId)
+        .then((screenshots) => {
+          const preTrade = screenshots.find((screenshot) => screenshot.type === "PRE_TRADE") ?? null;
+          setPreTradeScreenshots((prev) => ({ ...prev, [setupId]: preTrade }));
+        })
+        .catch(() => {
+          // Missing screenshot context renders as "no screenshot" below;
+          // never fabricated.
+        })
+        .finally(() => {
+          pendingScreenshotSetupIds.current.delete(setupId);
+        });
+      return current;
+    });
+  }, []);
+
   const handleRealtimeEvent = useCallback(
     (event: RealtimeEvent) => {
       if (event.type === "webhook.received") return;
@@ -91,6 +131,17 @@ export default function LiveSetupsClient({
             );
           });
           void ensureSnapshot(setup.marketSnapshotId);
+          // A screenshot's status is mutable over time (unlike a
+          // MarketSnapshot, which is immutable once created) - e.g. a
+          // setup.updated event landing this Setup on READY is exactly when
+          // pre-trade screenshot generation gets triggered server-side. Drop
+          // any cached entry so the effect below re-fetches it, instead of
+          // leaving a stale "no screenshot"/status cached forever.
+          setPreTradeScreenshots((prev) => {
+            if (!(setup.id in prev)) return prev;
+            const { [setup.id]: _removed, ...rest } = prev;
+            return rest;
+          });
           setSyncError(null);
         })
         .catch((err) => {
@@ -130,6 +181,16 @@ export default function LiveSetupsClient({
     [setups],
   );
 
+  // Triggers the lazy per-row screenshot fetch for every currently-known
+  // Setup (initial load, reconnect refetch, and any new/updated row) -
+  // ensureScreenshot's own dedup guards against refetching an id already
+  // cached or already in flight.
+  useEffect(() => {
+    for (const setup of sortedSetups) {
+      ensureScreenshot(setup.id);
+    }
+  }, [sortedSetups, ensureScreenshot]);
+
   return (
     <div className="card">
       <div className="page-header" style={{ marginBottom: 12 }}>
@@ -160,11 +221,13 @@ export default function LiveSetupsClient({
                 <th>Planned Entry</th>
                 <th>Expires</th>
                 <th>Source</th>
+                <th>Screenshot</th>
               </tr>
             </thead>
             <tbody>
               {sortedSetups.map((setup) => {
                 const snapshot = snapshots[setup.marketSnapshotId] ?? null;
+                const screenshot = preTradeScreenshots[setup.id];
                 const href = `/setups/${setup.id}`;
                 return (
                   <tr key={setup.id} className="row-link" onClick={() => router.push(href)}>
@@ -187,6 +250,20 @@ export default function LiveSetupsClient({
                     <td>{setup.expiresAt ? formatDateTime(setup.expiresAt) : "not set"}</td>
                     <td>
                       <SetupSourceBadge source={setup.source} />
+                    </td>
+                    <td>
+                      {screenshot === undefined && <span className="muted">loading...</span>}
+                      {screenshot === null && <span className="muted">none</span>}
+                      {screenshot && screenshot.status === "READY" && (
+                        <img
+                          src={`${API_BASE_URL}/screenshots/${screenshot.id}/image`}
+                          alt="Pre-trade chart screenshot thumbnail"
+                          className="screenshot-thumb"
+                        />
+                      )}
+                      {screenshot && screenshot.status !== "READY" && (
+                        <ScreenshotStatusBadge status={screenshot.status} />
+                      )}
                     </td>
                   </tr>
                 );

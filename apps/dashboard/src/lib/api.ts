@@ -730,6 +730,72 @@ export function getWebhookEventTimeline(id: string): Promise<JournalEvent[]> {
 // workspace dependency on @trading-copilot/shared-types, it stays decoupled
 // and mirrors whatever shape the API/WebSocket actually sends.
 
+// --- Milestone 5: chart screenshot generation ----------------------------
+//
+// Mirrors packages/shared-types/src/screenshot.ts's TradeScreenshot-adjacent
+// shapes by hand, same as every other type in this file - this module never
+// takes a workspace dependency on @trading-copilot/shared-types (its CJS
+// barrel transitively pulls in node:crypto via tradingview.ts, which breaks
+// a browser bundle; see ChartRenderer.tsx for the same note).
+
+export type ScreenshotType = "PRE_TRADE" | "POST_TRADE";
+export type ScreenshotStatus = "REQUESTED" | "GENERATING" | "READY" | "FAILED";
+export type TradeScreenshotSource = "BACKTEST_TRADE" | "JOURNAL_TRADE";
+
+/**
+ * A chart-render job's durable record (packages/trading-domain's
+ * TradeScreenshot). A READY row's pixels are fetched separately via
+ * `GET /screenshots/:id/image` - this object never carries the image bytes
+ * itself, only status/metadata.
+ */
+export interface TradeScreenshot {
+  id: string;
+  setupId: string | null;
+  tradeId: string | null;
+  tradeSource: TradeScreenshotSource | null;
+  type: ScreenshotType;
+  status: ScreenshotStatus;
+  storageProvider: string;
+  storageKey: string | null;
+  mimeType: string | null;
+  width: number | null;
+  height: number | null;
+  marketSnapshotId: string | null;
+  chartConfigVersion: string;
+  renderedAt: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export function getSetupScreenshots(setupId: string): Promise<TradeScreenshot[]> {
+  return apiFetch<TradeScreenshot[]>(`/setups/${setupId}/screenshots`);
+}
+
+/**
+ * Idempotent-safe manual/admin trigger (docs/screenshot-design.md): a FAILED
+ * row is reset to REQUESTED and re-enqueued, a READY row is returned
+ * unchanged. Safe to call again as a "Retry" action - never a different
+ * endpoint from the one automatically triggered server-side.
+ */
+export function requestPreTradeScreenshot(setupId: string): Promise<TradeScreenshot> {
+  return apiFetch<TradeScreenshot>(`/setups/${setupId}/screenshots/pre-trade`, {
+    method: "POST",
+  });
+}
+
+export function getTradeScreenshots(tradeId: string): Promise<TradeScreenshot[]> {
+  return apiFetch<TradeScreenshot[]>(`/journal/trades/${tradeId}/screenshots`);
+}
+
+/** Same idempotent-safe contract as requestPreTradeScreenshot, for POST_TRADE. */
+export function requestPostTradeScreenshot(tradeId: string): Promise<TradeScreenshot> {
+  return apiFetch<TradeScreenshot>(`/journal/trades/${tradeId}/screenshots/post-trade`, {
+    method: "POST",
+  });
+}
+
 export interface WebhookReceivedRealtimeEvent {
   type: "webhook.received";
   timestamp: string;

@@ -1,9 +1,17 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { ApiError, getJournalTrade, getSetupTimeline, type JournalEvent } from "@/lib/api";
+import {
+  ApiError,
+  getJournalTrade,
+  getSetupTimeline,
+  getTradeScreenshots,
+  type JournalEvent,
+  type TradeScreenshot,
+} from "@/lib/api";
 import { formatCurrency, formatDateTime, formatDecimal, formatR, signOf } from "@/lib/format";
 import { DirectionBadge, ExecutionModeBadge, JournalTradeStatusBadge } from "@/components/StatusBadge";
 import EventTimeline from "@/components/EventTimeline";
+import { ScreenshotsSection } from "@/components/ScreenshotCard";
 
 export default async function JournalTradeDetailPage({
   params,
@@ -38,6 +46,15 @@ export default async function JournalTradeDetailPage({
     } catch (err) {
       timelineError = err instanceof ApiError ? err.message : "Failed to load setup timeline.";
     }
+  }
+
+  // Best-effort, same as the timeline fetch above: a screenshots-fetch
+  // failure never blocks rendering the trade itself.
+  let screenshots: TradeScreenshot[] = [];
+  try {
+    screenshots = await getTradeScreenshots(id);
+  } catch {
+    // Rendered as "no screenshots" below - never fabricated.
   }
 
   const pnlSign = signOf(trade.netPnl);
@@ -183,6 +200,8 @@ export default async function JournalTradeDetailPage({
           </div>
         )}
       </div>
+
+      <ScreenshotsSection owner={{ kind: "trade", tradeId: id }} initialScreenshots={screenshots} />
 
       {trade.setupId && (
         <div className="card">
