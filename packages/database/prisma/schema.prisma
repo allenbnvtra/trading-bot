@@ -410,19 +410,26 @@ model ResearchHypothesis {
 // (WHERE-clause) unique index, so this is a hand-written migration.sql
 // (see the migration created in this task). DO NOT "clean this up" into a
 // plain @@unique([hypothesisId, datasetRole]), which would also forbid two
-// FAILED attempts or a RESEARCH+VALIDATION pair, both legitimate.
+// FAILED attempts or a RESEARCH+VALIDATION pair, both legitimate. The
+// index's WHERE clause is `status <> 'FAILED'` (not an explicit allow-list),
+// so any status value added later counts as "spent" by default.
+//
+// Both foreign keys are ON DELETE RESTRICT: deleting a hypothesis or a
+// backtest must never silently erase experiment history, including FAILED
+// rows (docs/research-methodology.md: failed experiments are never deleted
+// or hidden).
 model ResearchExperiment {
   id String @id @default(uuid())
 
   hypothesisId String
-  hypothesis   ResearchHypothesis @relation(fields: [hypothesisId], references: [id], onDelete: Cascade)
+  hypothesis   ResearchHypothesis @relation(fields: [hypothesisId], references: [id], onDelete: Restrict)
 
   datasetRole        ResearchDatasetRole
   datasetWindowStart DateTime
   datasetWindowEnd   DateTime
 
   backtestId String?   @unique
-  backtest   Backtest? @relation(fields: [backtestId], references: [id])
+  backtest   Backtest? @relation(fields: [backtestId], references: [id], onDelete: Restrict)
 
   status        ResearchExperimentStatus @default(QUEUED)
   failureReason String?
@@ -561,6 +568,7 @@ enum JournalEventType {
   RESEARCH_EXPERIMENT_CREATED
   RESEARCH_EXPERIMENT_COMPLETED
   STRATEGY_VERSION_STATUS_CHANGED
+  RESEARCH_EXPERIMENT_FAILED
 }
 
 enum JournalEntityType {
