@@ -14,6 +14,7 @@
   "dependencies": {
     "@trading-copilot/backtester": "workspace:*",
     "@trading-copilot/database": "workspace:*",
+    "@trading-copilot/screenshot-storage": "workspace:*",
     "@trading-copilot/shared-types": "workspace:*",
     "@trading-copilot/strategy-engine": "workspace:*",
     "@trading-copilot/trading-domain": "workspace:*",
