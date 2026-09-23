@@ -4,6 +4,9 @@ import Redis from "ioredis";
 import type { Server } from "socket.io";
 import { REALTIME_CHANNEL, parseRealtimeEvent } from "@trading-copilot/shared-types";
 import { createRedisConnectionOptions } from "../common/redis-connection";
+import { parseRealtimeCorsOrigin } from "./realtime-cors";
+
+const corsOrigin = parseRealtimeCorsOrigin(process.env.REALTIME_CORS_ORIGIN);
 
 /**
  * Rebroadcasts apps/worker's Redis pub/sub notifications (Setup
@@ -12,11 +15,15 @@ import { createRedisConnectionOptions } from "../common/redis-connection";
  * from REALTIME_CHANNEL, unchanged. No filtering/auth: single-user local
  * tool (see docs/tradingview-setup.md "Realtime").
  *
+ * WebSocket CORS origin is configurable via REALTIME_CORS_ORIGIN env var
+ * (unset/empty = permissive for local development; set to a comma-separated
+ * list of exact origins in production).
+ *
  * Pub/sub requires its own dedicated Redis connection (a subscribed
  * connection cannot issue other commands), so this uses a separate ioredis
  * client rather than reusing BullMQ's connection.
  */
-@WebSocketGateway({ cors: { origin: true } })
+@WebSocketGateway({ cors: { origin: corsOrigin } })
 export class RealtimeGateway implements OnModuleInit, OnModuleDestroy {
   @WebSocketServer()
   server!: Server;
