@@ -358,3 +358,42 @@ export async function listScreenshotsForTrade(
   });
   return rows.map(mapTradeScreenshot);
 }
+
+/**
+ * The single most recent screenshot that reached READY, across every
+ * setup/trade. Backed by the `[status, renderedAt]` index — an equality
+ * filter on `status` with `take: 1` ordering on `renderedAt`, never a full
+ * table scan. Mirrors findMostRecentProcessedInboundWebhookEvent in
+ * inbound-webhook-events.ts, with one deliberate difference: `renderedAt`
+ * is nullable in the schema, and this dev database in fact has a READY row
+ * with a NULL `renderedAt` (caught manually, live, while building this
+ * query — not a hypothetical). Postgres's default null-ordering for
+ * `ORDER BY ... DESC` is NULLS FIRST, so a plain `.desc` here would have
+ * put that NULL row ahead of every genuinely-dated one, silently reporting
+ * the wrong "most recent" screenshot. `nulls: "last"` makes NULL sort as
+ * the oldest, matching what "most recent by renderedAt" should mean.
+ */
+export async function findMostRecentReadyScreenshot(): Promise<TradeScreenshot | null> {
+  const row = await prisma.tradeScreenshot.findFirst({
+    where: { status: "READY" },
+    orderBy: { renderedAt: { sort: "desc", nulls: "last" } },
+  });
+  return row ? mapTradeScreenshot(row) : null;
+}
+
+/**
+ * Count of screenshots that transitioned to FAILED within the last
+ * `sinceMinutesAgo` minutes (by `updatedAt`, the column
+ * markScreenshotFailed's `updateMany` actually writes on that transition).
+ * Backed by the `[status, updatedAt]` index — an equality filter on
+ * `status` with a range filter on `updatedAt`, never a full table scan.
+ * Deliberately bounded to a recent window rather than an all-time FAILED
+ * count, so a subsystem that recovered from a past incident is not reported
+ * DEGRADED forever. Used only by GET /health.
+ */
+export async function countRecentFailedScreenshots(sinceMinutesAgo: number): Promise<number> {
+  const cutoff = new Date(Date.now() - sinceMinutesAgo * 60_000);
+  return prisma.tradeScreenshot.count({
+    where: { status: "FAILED", updatedAt: { gte: cutoff } },
+  });
+}

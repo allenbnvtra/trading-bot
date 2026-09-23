@@ -9,6 +9,8 @@ import * as marketSnapshotsRepository from "./market-snapshots";
 import * as setupsRepository from "./setups";
 import {
   assertValidScreenshotTarget,
+  countRecentFailedScreenshots,
+  findMostRecentReadyScreenshot,
   getScreenshot,
   listScreenshotsForSetup,
   listScreenshotsForTrade,
@@ -407,5 +409,65 @@ describe.skipIf(!process.env.DATABASE_URL)("trade-screenshots repository (live P
 
   it("getScreenshot returns null for an unknown id", async () => {
     expect(await getScreenshot(randomUUID())).toBeNull();
+  });
+
+  /**
+   * These two back GET /health's screenshotGeneration status (Task 14,
+   * apps/api/src/health/health.service.ts) — indexed queries only, no full
+   * table scan (see the doc comments on findMostRecentReadyScreenshot and
+   * countRecentFailedScreenshots above). This suite runs against a shared,
+   * non-transactional live database alongside other test files, so
+   * assertions here are delta-based (before/after this test's own writes)
+   * rather than asserting an absolute row count or a specific "most recent"
+   * id, which would be flaky under concurrent test execution.
+   */
+  it("findMostRecentReadyScreenshot returns the most recently rendered READY row", async () => {
+    const created = await requestOrRetryScreenshot(postTradeInput());
+    // 100 years past the moment this test actually runs, so it is strictly
+    // greater than any renderedAt this same test could have written on any
+    // *previous* run against this real, non-reset database (each run's
+    // Date.now() is later in wall-clock time than the last) and than
+    // anything a concurrently-running test could plausibly write - never a
+    // fixed literal, which collided across repeated runs during development
+    // of this test.
+    const renderedAt = new Date(Date.now() + 100 * 365 * 24 * 60 * 60 * 1000);
+    await markScreenshotReady(created.screenshot.id, {
+      storageProvider: "LOCAL_DISK",
+      storageKey: `screenshots/${created.screenshot.id}.png`,
+      mimeType: "image/png",
+      width: 1440,
+      height: 900,
+      renderedAt,
+    });
+
+    const result = await findMostRecentReadyScreenshot();
+
+    expect(result?.id).toBe(created.screenshot.id);
+    expect(result?.renderedAt?.toISOString()).toBe(renderedAt.toISOString());
+  });
+
+  it("countRecentFailedScreenshots counts a FAILED row within the window and excludes one outside it", async () => {
+    const before = await countRecentFailedScreenshots(60);
+
+    const created = await requestOrRetryScreenshot(postTradeInput());
+    await markScreenshotGenerating(created.screenshot.id);
+    await markScreenshotFailed(created.screenshot.id, {
+      failureCode: "RENDER_TIMEOUT",
+      failureMessage: "chart renderer timed out",
+    });
+
+    const afterFailure = await countRecentFailedScreenshots(60);
+    expect(afterFailure).toBe(before + 1);
+
+    // Backdate updatedAt past the window (@updatedAt only auto-manages the
+    // field when the caller does not supply it explicitly — an explicit
+    // value here is honored as-is) and confirm the row drops back out.
+    await prisma.tradeScreenshot.update({
+      where: { id: created.screenshot.id },
+      data: { updatedAt: new Date(Date.now() - 120 * 60_000) },
+    });
+
+    const afterWindowExpiry = await countRecentFailedScreenshots(60);
+    expect(afterWindowExpiry).toBe(before);
   });
 });

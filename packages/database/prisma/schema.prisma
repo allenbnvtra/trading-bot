@@ -707,7 +707,17 @@ model TradeScreenshot {
   @@unique([tradeId, tradeSource, type, chartConfigVersion])
   @@index([tradeId, tradeSource])
   @@index([setupId])
-  @@index([status])
+  // Replaces the plain `[status]` index (Task 1): nothing in this codebase
+  // ever queries status alone (grep confirms — every existing lookup is by
+  // id, or status combined with id in an `updateMany` guard, neither of
+  // which needs a status index at all). These two compound indexes are what
+  // GET /health's screenshot-subsystem check actually needs (Task 14, mirrors
+  // InboundWebhookEvent's `[processingStatus, receivedAt]` pattern exactly)
+  // and each still serves a plain status-equality filter via its leading
+  // column, so keeping the old single-column index alongside them would be
+  // pure write-amplification with no query it serves better.
+  @@index([status, renderedAt])
+  @@index([status, updatedAt])
 }
 
 // ---------------------------------------------------------------------------
