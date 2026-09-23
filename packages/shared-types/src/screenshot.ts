@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 /**
  * chartConfigVersion for the current rendering configuration (layout,
  * dimensions, visible candle count, annotation behavior). Bump this and
@@ -23,3 +25,10 @@ export const GENERATE_POST_TRADE_SCREENSHOT_JOB = "generate-post-trade-screensho
 export interface ScreenshotGenerationJobPayload {
   screenshotId: string;
 }
+
+/** Both PRE_TRADE/POST_TRADE screenshot-generation endpoints take no request body — the setup/trade id comes from the URL path param. An empty schema still runs through this app's usual ZodValidationPipe convention for consistency with every other endpoint, rather than skipping @Body() validation entirely (no such precedent exists elsewhere in this codebase — checked). */
+export const createPreTradeScreenshotSchema = z.object({});
+export type CreatePreTradeScreenshotInput = z.infer<typeof createPreTradeScreenshotSchema>;
+
+export const createPostTradeScreenshotSchema = z.object({});
+export type CreatePostTradeScreenshotInput = z.infer<typeof createPostTradeScreenshotSchema>;
