@@ -31,6 +31,13 @@ import RenderClient from "../../RenderClient";
  * instead is that the candle cutoff never extends past the moment the
  * outcome was actually known (`exitTimestamp`), never `new Date()` at
  * render time.
+ *
+ * Error codes this route can report (via RenderClient's errorCode prop):
+ * TRADE_NOT_FOUND, TRADE_NOT_CLOSED, NO_CHART_CONTEXT (the trade has no
+ * setupId at all - a permanent, by-design condition, distinct from
+ * MARKET_SNAPSHOT_NOT_FOUND below), MARKET_SNAPSHOT_NOT_FOUND (the trade
+ * has a setupId but its Setup or MarketSnapshot could not be loaded - an
+ * unexpected fetch failure), NO_CANDLES.
  */
 export default async function RenderTradePage({
   params,
@@ -62,18 +69,34 @@ export default async function RenderTradePage({
 
   // A JournalTrade's setupId is genuinely optional (a manually-journaled
   // PAPER/MANUAL_LIVE trade need not have gone through the Setup pipeline).
-  // Best-effort: a Setup fetch failing (or setupId being unset) collapses
-  // into the same MARKET_SNAPSHOT_NOT_FOUND error as Task 7's route, since
-  // from this chart's perspective a missing Setup and a missing
-  // MarketSnapshot have the same consequence - no timeframe, no VWAP/
-  // support/resistance context, nothing to safely render.
-  const setup = trade.setupId ? await getSetup(trade.setupId).catch(() => null) : null;
+  // That's a permanent, by-design condition, not a transient failure - it
+  // gets its own error code (NO_CHART_CONTEXT) rather than being folded
+  // into MARKET_SNAPSHOT_NOT_FOUND below, so a failed screenshot's audit
+  // trail can distinguish "this trade will never have chart context" from
+  // "something unexpectedly failed to load". "Unknown stays unknown": we
+  // never guess a timeframe to render anyway - refusing to render is
+  // correct either way, only the reported reason differs.
+  if (!trade.setupId) {
+    return (
+      <RenderClient
+        errorCode="NO_CHART_CONTEXT"
+        errorMessage="This trade has no linked Setup, so no MarketSnapshot (timeframe/VWAP/support/resistance) is available to chart"
+      />
+    );
+  }
+
+  // Best-effort from here: a Setup or MarketSnapshot fetch failing despite
+  // setupId being set is an unexpected condition (the Setup row should
+  // exist, and Setup.marketSnapshotId is non-nullable) - report it as
+  // MARKET_SNAPSHOT_NOT_FOUND, distinct from the by-design NO_CHART_CONTEXT
+  // case above.
+  const setup = await getSetup(trade.setupId).catch(() => null);
   const snapshot = setup ? await getMarketSnapshot(setup.marketSnapshotId).catch(() => null) : null;
   if (!snapshot) {
     return (
       <RenderClient
         errorCode="MARKET_SNAPSHOT_NOT_FOUND"
-        errorMessage="No MarketSnapshot available for this trade (no linked Setup, or its MarketSnapshot could not be loaded)"
+        errorMessage="Trade's linked Setup or its MarketSnapshot could not be loaded"
       />
     );
   }
