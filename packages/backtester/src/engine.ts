@@ -25,8 +25,26 @@ import { BacktesterError } from "./errors";
  * the engine level. Every STRATEGY_REGISTRY entry's parameters structurally
  * include these two fields (see docs/backtesting-assumptions.md "Stop and
  * target derivation": ATR-derived stops/targets are a system-wide backtest
- * assumption, not a per-strategy choice), so this narrowing is always safe;
- * see the single documented cast in runBacktest below.
+ * assumption, not a per-strategy choice). The compile-time guard below
+ * (`_everyRegisteredStrategyHasAtrStopTarget`) enforces this, so adding a
+ * registry entry whose parameters lack either field fails to compile.
+ *
+ * runBacktest contains exactly two documented structural-narrowing casts,
+ * both needed only because STRATEGY_REGISTRY is a union of differently
+ * shaped evaluators that TypeScript cannot correlate with a generic K:
+ *
+ * 1. `strategy.evaluate as (candles, parameters: unknown) => StrategySignal[]`.
+ *    Calling a union of functions requires an argument assignable to the
+ *    intersection of their parameter types, which TypeScript cannot prove
+ *    for a generic K. Runtime-safe because BacktestRunInput<K> pairs
+ *    strategyVersion.parameters with the same K used to pick the evaluator,
+ *    and every registered evaluator re-validates its parameters with its
+ *    own Zod schema before using them, so a mismatched object throws
+ *    rather than being silently misread.
+ * 2. `strategyVersion.parameters as AtrStopTargetParameters`. Runtime-safe
+ *    because every registered strategy's parameters structurally extend
+ *    AtrStopTargetParameters (compile-time guarded below) and have already
+ *    been validated by that strategy's own schema inside evaluate().
  */
 export interface AtrStopTargetParameters {
   stopAtrMultiplier: number;
@@ -36,6 +54,21 @@ export interface AtrStopTargetParameters {
 export type StrategyParametersFor<K extends StrategyKey> = Parameters<
   (typeof STRATEGY_REGISTRY)[K]["evaluate"]
 >[1];
+
+/**
+ * Compile-time guard for cast 2 in runBacktest: resolves to `never` (and so
+ * fails to compile) if any STRATEGY_REGISTRY entry's parameters do not
+ * structurally extend AtrStopTargetParameters. The mapped type checks each
+ * key individually rather than the whole union at once.
+ */
+type RegistryEntriesMissingAtrStopTarget = {
+  [K in StrategyKey]: StrategyParametersFor<K> extends AtrStopTargetParameters ? never : K;
+}[StrategyKey];
+type EveryRegisteredStrategyHasAtrStopTarget = [RegistryEntriesMissingAtrStopTarget] extends [never]
+  ? true
+  : never;
+const _everyRegisteredStrategyHasAtrStopTarget: EveryRegisteredStrategyHasAtrStopTarget = true;
+void _everyRegisteredStrategyHasAtrStopTarget;
 
 export interface BacktestRunInput<K extends StrategyKey = StrategyKey> {
   /**
@@ -113,15 +146,14 @@ export function runBacktest<K extends StrategyKey>(input: BacktestRunInput<K>): 
   assertCandlesStrictlyIncreasing(candles);
 
   const strategy = STRATEGY_REGISTRY[input.strategyKey];
-  // Beyond what the brief's Step 7 snippet shows: with two STRATEGY_REGISTRY
-  // entries, `strategy` is a union of differently-shaped evaluators.
-  // Calling a union of functions requires an argument assignable to the
-  // *intersection* of their parameter types, which TypeScript cannot
-  // establish here even though it is true at runtime: BacktestRunInput<K>
-  // (via StrategyParametersFor<K>) already guarantees strategyVersion.parameters
-  // was validated against exactly the schema paired with this strategyKey in
-  // the registry. This is the one deliberate escape hatch for that generic
-  // dispatch, matching the AtrStopTargetParameters cast below in spirit.
+  // Cast 1 of 2 (see AtrStopTargetParameters' doc comment): with more than
+  // one STRATEGY_REGISTRY entry, `strategy` is a union of differently-shaped
+  // evaluators. Calling a union of functions requires an argument
+  // assignable to the *intersection* of their parameter types, which
+  // TypeScript cannot establish here even though it is true at runtime:
+  // BacktestRunInput<K> (via StrategyParametersFor<K>) pairs
+  // strategyVersion.parameters with the same strategyKey, and each
+  // evaluator re-validates its parameters with its own Zod schema.
   const evaluate = strategy.evaluate as (
     candles: Candle[],
     parameters: unknown,
@@ -162,9 +194,9 @@ export function runBacktest<K extends StrategyKey>(input: BacktestRunInput<K>): 
       entryIndex,
       candles,
       slippageAmount,
-      // Safe per AtrStopTargetParameters' doc comment: every registered
-      // strategy's parameters structurally include stopAtrMultiplier/
-      // targetAtrMultiplier.
+      // Cast 2 of 2, safe per AtrStopTargetParameters' doc comment: every
+      // registered strategy's parameters structurally include
+      // stopAtrMultiplier/targetAtrMultiplier (compile-time guarded).
       strategyVersion.parameters as AtrStopTargetParameters,
     );
 

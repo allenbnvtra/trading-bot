@@ -199,37 +199,121 @@ describe("runBacktest — determinism", () => {
 });
 
 describe("runBacktest - StrategyDefinition DSL", () => {
-  it("runs an AI-generated-DSL strategy through the same engine as ema-trend-pullback, unchanged", () => {
-    const definition = strategyDefinitionSchema.parse({
-      version: "1.0.0",
-      direction: "LONG",
-      entryRules: [{ type: "EMA_CROSS_ABOVE", fastPeriod: 2, slowPeriod: 3 }],
-      atrPeriod: 2,
-      stopAtrMultiplier: 1,
-      targetAtrMultiplier: 2,
-    });
+  /**
+   * DSL fixture verified by actually running it (not eyeballed). Candles
+   * 0-4 are closes 10, 11, 9, 8, 13 with high = close + 1, low = close - 1,
+   * the same shape strategy-definition.test.ts uses for its EMA_CROSS_ABOVE
+   * look-ahead proof:
+   *   EMA(2): seed@1 = 10.5, idx2 = 9.5, idx3 = 8.5, idx4 = 11.5
+   *   EMA(3): seed@2 = 10, idx3 = 9, idx4 = 11
+   *   => fast crosses above slow at index 4 (8.5 <= 9, then 11.5 > 11).
+   *   ATR(2): TR = [2, 2, 3, 2, 6]; seed@1 = 2, 2.5, 2.25, atr4 = 4.125
+   * Candle 5 is the entry candle (open 14, a gap above the signal close of
+   * 13, so "next-bar open" is distinguishable from "signal close"); it
+   * touches neither stop nor target. Candle 6 trades through the target.
+   *
+   * With tickSize 0.25, slippageTicks 1 (slippage 0.25), stop 1 x ATR,
+   * target 2 x ATR:
+   *   entry  = 14 + 0.25            = 14.25
+   *   stop   = 14.25 - 1 x 4.125    = 10.125
+   *   target = 14.25 + 2 x 4.125    = 22.5
+   *   exit   = 22.5 - 0.25 (adverse slippage on target fill) = 22.25
+   * Sizing: riskPerContract = 4.125 x 50 + 2.5 commission + 0.25 x 50
+   *   slippage cost = 221.25; budget = 100000 x 1% = 1000;
+   *   quantity = floor(1000 / 221.25) = 4.
+   * P&L: gross = (22.25 - 14.25) x 50 x 4 = 1600; fees = 2.5 x 4 x 2 = 20;
+   *   net = 1580; riskAmount = 221.25 x 4 = 885.
+   */
+  const DSL_DEFINITION = strategyDefinitionSchema.parse({
+    version: "1.0.0",
+    direction: "LONG",
+    entryRules: [{ type: "EMA_CROSS_ABOVE", fastPeriod: 2, slowPeriod: 3 }],
+    atrPeriod: 2,
+    stopAtrMultiplier: 1,
+    targetAtrMultiplier: 2,
+  });
 
-    const result = runBacktest({
+  function dslCandles(): Candle[] {
+    return [
+      ...[10, 11, 9, 8, 13].map((close, i) => makeCandle(i, close, close + 1, close - 1, close)),
+      makeCandle(5, 14, 15, 13.5, 14.5),
+      makeCandle(6, 18, 23, 17, 22),
+    ];
+  }
+
+  function dslInput(): BacktestRunInput<"ai-generated-dsl-v1"> {
+    return {
       strategyKey: "ai-generated-dsl-v1",
       instrument: makeInstrument(),
-      candles: buildBaseUptrendCandles(),
+      candles: dslCandles(),
       strategyVersion: {
         id: "sv-dsl-1",
         strategyId: "s-dsl",
         version: "1.0.0",
         name: "DSL test",
         description: "test",
-        parameters: definition,
+        parameters: DSL_DEFINITION,
         status: "DISCOVERED",
-        createdAt: new Date(),
+        createdAt: new Date("2024-01-01T00:00:00.000Z"),
         sourceHypothesisId: null,
       },
-      initialBalance: D(10000),
+      initialBalance: D(100000),
       riskPercentage: D(1),
       slippageTicks: 1,
-    });
+    };
+  }
 
-    expect(Array.isArray(result.trades)).toBe(true);
+  it("runs an AI-generated-DSL strategy through the same engine as ema-trend-pullback and produces a real trade", () => {
+    const result = runBacktest(dslInput());
+
+    expect(result.trades.length).toBe(1);
+    expect(result.skippedSignalCount).toBe(0);
+    const trade = result.trades[0]!;
+    const candles = dslCandles();
+
+    expect(trade.direction).toBe("LONG");
+    expect(trade.strategyVersionId).toBe("sv-dsl-1");
+    expect(trade.entryReason).toBe("StrategyDefinition v1.0.0: EMA_CROSS_ABOVE");
+
+    // Entry timing: signal on candle 4's close, entered at candle 5's open
+    // plus one tick of adverse slippage, never at the signal close (13).
+    expect(trade.signalTimestamp).toEqual(candles[4]!.timestamp);
+    expect(trade.entryTimestamp).toEqual(candles[5]!.timestamp);
+    expect(trade.entryPrice.toString()).toBe("14.25");
+
+    // Stop/target distances are atrAtSignal (4.125) x the definition's
+    // multipliers, measured from the actual entry price.
+    const atrAtSignal = D("4.125");
+    expect(trade.entryPrice.minus(trade.stopPrice).toString()).toBe(
+      atrAtSignal.times(DSL_DEFINITION.stopAtrMultiplier).toString(),
+    );
+    expect(trade.targetPrice.minus(trade.entryPrice).toString()).toBe(
+      atrAtSignal.times(DSL_DEFINITION.targetAtrMultiplier).toString(),
+    );
+    expect(trade.stopPrice.toString()).toBe("10.125");
+    expect(trade.targetPrice.toString()).toBe("22.5");
+
+    // Exit on candle 6 at target minus adverse slippage.
+    expect(trade.exitReason).toBe("TARGET");
+    expect(trade.exitTimestamp).toEqual(candles[6]!.timestamp);
+    expect(trade.exitPrice.toString()).toBe("22.25");
+
+    expect(trade.quantity).toBe(4);
+    expect(trade.grossPnl.toString()).toBe("1600");
+    expect(trade.fees.toString()).toBe("20");
+    expect(trade.netPnl.toString()).toBe("1580");
+    expect(trade.riskAmount.toString()).toBe("885");
+    expect(trade.rMultiple.toString()).toBe(D(1580).dividedBy(885).toString());
+    expect(trade.maximumFavorableExcursion.toString()).toBe("8.75");
+    expect(trade.maximumAdverseExcursion.toString()).toBe("0.75");
+  });
+
+  it("is deterministic: two runs on identical DSL input produce byte-identical trades", () => {
+    const first = runBacktest(dslInput());
+    const second = runBacktest(dslInput());
+    expect(first.trades.length).toBeGreaterThan(0);
+    expect(second).toEqual(first);
+    expect(JSON.stringify(second)).toBe(JSON.stringify(first));
   });
 });
 

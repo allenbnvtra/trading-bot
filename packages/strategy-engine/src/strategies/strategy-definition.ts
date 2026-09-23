@@ -6,6 +6,46 @@ import { calculateEma } from "../indicators/ema";
 import type { StrategySignal } from "../types";
 
 /**
+ * Bounds on every numeric knob an AI-proposed StrategyDefinition can set.
+ * These exist to prevent parameter mining via degenerate values (see
+ * docs/research-methodology.md "Overfitting and parameter mining"), not to
+ * constrain legitimate strategy design:
+ *
+ * - ATR multipliers are limited to [0.25, 10]. A stop at a tiny fraction of
+ *   ATR (e.g. 0.001) sits inside ordinary bar noise, so backtest outcomes
+ *   become dominated by same-candle and slippage artifacts, and an extreme
+ *   target/stop ratio can manufacture flattering win-rate or R numbers that
+ *   reflect the parameter choice rather than any genuine edge. 10 x ATR is
+ *   already far wider than any conventional stop or target.
+ * - Indicator periods (atrPeriod and every rule's fastPeriod, slowPeriod,
+ *   period) are integers in [1, 500]. 500 is comfortably above any
+ *   realistic EMA/ATR lookback (the classic long lookback is 200) while
+ *   rejecting nonsensical values that would leave almost every candle in
+ *   warm-up.
+ *
+ * Changing these bounds changes which StrategyDefinitions are valid, so it
+ * must be a deliberate, reviewed change, never a per-hypothesis tweak.
+ */
+export const STRATEGY_DEFINITION_BOUNDS = {
+  minAtrMultiplier: 0.25,
+  maxAtrMultiplier: 10,
+  minPeriod: 1,
+  maxPeriod: 500,
+} as const;
+
+const periodSchema = z
+  .number()
+  .int()
+  .min(STRATEGY_DEFINITION_BOUNDS.minPeriod)
+  .max(STRATEGY_DEFINITION_BOUNDS.maxPeriod);
+
+const atrMultiplierSchema = z
+  .number()
+  .finite()
+  .min(STRATEGY_DEFINITION_BOUNDS.minAtrMultiplier)
+  .max(STRATEGY_DEFINITION_BOUNDS.maxAtrMultiplier);
+
+/**
  * The safe, schema-validated rule grammar an AI-proposed StrategyDefinition
  * must use: no arbitrary code, no dynamic TypeScript generation (that
  * would reintroduce the exact code-injection risk this DSL exists to
@@ -17,30 +57,30 @@ import type { StrategySignal } from "../types";
 const emaCrossAboveRuleSchema = z
   .object({
     type: z.literal("EMA_CROSS_ABOVE"),
-    fastPeriod: z.number().int().positive(),
-    slowPeriod: z.number().int().positive(),
+    fastPeriod: periodSchema,
+    slowPeriod: periodSchema,
   })
   .strict();
 
 const emaCrossBelowRuleSchema = z
   .object({
     type: z.literal("EMA_CROSS_BELOW"),
-    fastPeriod: z.number().int().positive(),
-    slowPeriod: z.number().int().positive(),
+    fastPeriod: periodSchema,
+    slowPeriod: periodSchema,
   })
   .strict();
 
 const closeAboveEmaRuleSchema = z
   .object({
     type: z.literal("CLOSE_ABOVE_EMA"),
-    period: z.number().int().positive(),
+    period: periodSchema,
   })
   .strict();
 
 const closeBelowEmaRuleSchema = z
   .object({
     type: z.literal("CLOSE_BELOW_EMA"),
-    period: z.number().int().positive(),
+    period: periodSchema,
   })
   .strict();
 
@@ -66,9 +106,9 @@ export const strategyDefinitionSchema = z
     version: z.literal("1.0.0"),
     direction: z.enum(["LONG", "SHORT"]),
     entryRules: z.array(entryRuleSchema).min(1),
-    atrPeriod: z.number().int().positive(),
-    stopAtrMultiplier: z.number().positive(),
-    targetAtrMultiplier: z.number().positive(),
+    atrPeriod: periodSchema,
+    stopAtrMultiplier: atrMultiplierSchema,
+    targetAtrMultiplier: atrMultiplierSchema,
   })
   .strict();
 
