@@ -190,6 +190,12 @@ export const JOURNAL_EVENT_TYPES = [
   "SCREENSHOT_CREATED",
   "SCREENSHOT_FAILED",
   "SCREENSHOT_RETRIED",
+  // Milestone 6 — notification delivery lifecycle. See docs/notifications.md.
+  "NOTIFICATION_QUEUED",
+  "NOTIFICATION_SENDING",
+  "NOTIFICATION_SENT",
+  "NOTIFICATION_RETRYING",
+  "NOTIFICATION_FAILED",
 ] as const;
 export type JournalEventType = (typeof JOURNAL_EVENT_TYPES)[number];
 
@@ -205,6 +211,7 @@ export const JOURNAL_ENTITY_TYPES = [
   "POST_TRADE_ANALYSIS",
   "INBOUND_WEBHOOK_EVENT",
   "TRADE_SCREENSHOT",
+  "NOTIFICATION_DELIVERY",
 ] as const;
 export type JournalEntityType = (typeof JOURNAL_ENTITY_TYPES)[number];
 

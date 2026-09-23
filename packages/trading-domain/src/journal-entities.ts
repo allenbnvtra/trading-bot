@@ -6,11 +6,15 @@ import type {
   JournalEventType,
   JournalTradeStatus,
   LossCategory,
+  NotificationDeliveryStatus,
+  NotificationProviderType,
+  NotificationType,
   PostTradeOutcome,
   ScreenshotStatus,
   ScreenshotType,
   SetupSource,
   SetupStatus,
+  SkipReason,
   Timeframe,
   TradeSource,
 } from "@trading-copilot/shared-types";
@@ -165,6 +169,18 @@ export interface JournalTrade {
   status: JournalTradeStatus;
   entryNotes: string | null;
   exitNotes: string | null;
+  /**
+   * Set only when executionMode is SKIPPED, by a human choosing SKIP TRADE
+   * on the dashboard. Always optional — a skip needs no justification to be
+   * recorded, but one is preserved for future analysis when given.
+   */
+  skipReason: SkipReason | null;
+  /**
+   * Computed once, at close time, from the sign of netPnl — never
+   * fabricated, never client-supplied. Null until CLOSED. See
+   * computeJournalTradeClose in journal-trades.ts.
+   */
+  outcome: PostTradeOutcome | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -281,6 +297,39 @@ export interface TradeScreenshot {
   marketSnapshotId: string | null;
   chartConfigVersion: string;
   renderedAt: Date | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+/**
+ * One outbound (Telegram, or CONSOLE in development) notification for a
+ * setup-lifecycle event. Idempotent by construction: the database
+ * @@unique([setupId, notificationType, templateVersion]) constraint on the
+ * NotificationDelivery model (not application-level check-then-insert) is
+ * what makes a BullMQ retry, or two concurrent requests for the same setup
+ * reaching READY twice, converge on one row instead of sending a duplicate
+ * message. See requestOrRetryNotification in notification-deliveries.ts and
+ * docs/notifications.md. tradeId/tradeSource are reserved for a future
+ * trade-scoped notification type (e.g. a fill confirmation) — nothing in
+ * this milestone sets them; every row created this milestone has them null
+ * and setupId set.
+ */
+export interface NotificationDelivery {
+  id: string;
+  setupId: string | null;
+  tradeId: string | null;
+  tradeSource: TradeSource | null;
+  provider: NotificationProviderType;
+  notificationType: NotificationType;
+  templateVersion: string;
+  status: NotificationDeliveryStatus;
+  attemptCount: number;
+  queuedAt: Date;
+  sendingAt: Date | null;
+  sentAt: Date | null;
+  externalMessageId: string | null;
   failureCode: string | null;
   failureMessage: string | null;
   createdAt: Date;

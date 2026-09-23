@@ -358,6 +358,12 @@ enum JournalEventType {
   SCREENSHOT_CREATED
   SCREENSHOT_FAILED
   SCREENSHOT_RETRIED
+  // Milestone 6 — notification delivery lifecycle. See docs/notifications.md.
+  NOTIFICATION_QUEUED
+  NOTIFICATION_SENDING
+  NOTIFICATION_SENT
+  NOTIFICATION_RETRYING
+  NOTIFICATION_FAILED
 }
 
 enum JournalEntityType {
@@ -371,6 +377,7 @@ enum JournalEntityType {
   POST_TRADE_ANALYSIS
   INBOUND_WEBHOOK_EVENT
   TRADE_SCREENSHOT
+  NOTIFICATION_DELIVERY
 }
 
 enum ScreenshotType {
@@ -398,6 +405,50 @@ enum WebhookProcessingStatus {
   REJECTED
   FAILED
   UNSUPPORTED
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 6 — notifications + manual trade workflow (see
+// docs/notifications.md). Everything here is additive to Milestone 2/3/5.
+// ---------------------------------------------------------------------------
+
+enum NotificationProviderType {
+  TELEGRAM
+  CONSOLE
+}
+
+// Setup-lifecycle notifications only in this milestone (see
+// docs/notifications.md "Notification policy"). tradeId/tradeSource on
+// NotificationDelivery are reserved for a future trade-scoped notification
+// type (e.g. a fill confirmation) — nothing in this milestone sets them.
+enum NotificationType {
+  SETUP_PREPARE
+  SETUP_READY
+  SETUP_INVALIDATED
+  SETUP_EXPIRED
+  SETUP_REJECTED
+}
+
+enum NotificationDeliveryStatus {
+  QUEUED
+  SENDING
+  SENT
+  FAILED
+  RETRYING
+}
+
+// Optional reason recorded when a READY setup is deliberately not taken
+// (see docs/notifications.md / docs/trade-journal-design.md "Skip
+// workflow"). Nothing auto-assigns this — only a human choosing SKIP TRADE
+// on the dashboard sets it, and it is always optional.
+enum SkipReason {
+  MISSED_ALERT
+  PRICE_MOVED
+  MANUAL_DISAGREEMENT
+  RISK_TOO_HIGH
+  BUSY
+  SETUP_NO_LONGER_VALID
+  OTHER
 }
 
 // Immutable once created — packages/database exposes no update function for
@@ -506,6 +557,7 @@ model Setup {
   journalTrades        JournalTrade[]
   screenshots          TradeScreenshot[]
   inboundWebhookEvents InboundWebhookEvent[]
+  notifications        NotificationDelivery[]
 
   @@index([instrumentId, status])
   @@index([strategyVersionId])
@@ -598,6 +650,16 @@ model JournalTrade {
 
   entryNotes String?
   exitNotes  String?
+
+  // Set only when executionMode is SKIPPED, by a human choosing SKIP TRADE
+  // on the dashboard. Always optional — a skip needs no justification to be
+  // recorded, but one is preserved for future analysis when given.
+  skipReason SkipReason?
+
+  // Computed once, at close time, from the sign of netPnl — never
+  // fabricated, never client-supplied. Null until CLOSED. See
+  // computeJournalTradeClose in journal-trades.ts.
+  outcome PostTradeOutcome?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -806,4 +868,48 @@ model InboundWebhookEvent {
   // full table scan.
   @@index([receivedAt])
   @@index([setupId])
+}
+
+// One row per (setupId, notificationType, templateVersion) — the
+// @@unique constraint below is the actual idempotency guarantee (a
+// database constraint, not check-then-insert), the same pattern
+// TradeScreenshot and InboundWebhookEvent already use. A BullMQ retry, or
+// two concurrent requests for the same setup reaching READY twice, must
+// converge on this one row rather than sending a duplicate Telegram
+// message — see requestOrRetryNotification in
+// notification-deliveries.ts. tradeId/tradeSource exist for a future
+// trade-scoped notification type; every row this milestone creates has
+// them null and setupId set.
+model NotificationDelivery {
+  id String @id @default(uuid())
+
+  setupId String?
+  setup   Setup?  @relation(fields: [setupId], references: [id])
+
+  tradeId     String?
+  tradeSource TradeSource?
+
+  provider         NotificationProviderType
+  notificationType NotificationType
+  templateVersion  String
+
+  status       NotificationDeliveryStatus @default(QUEUED)
+  attemptCount Int                        @default(0)
+
+  queuedAt  DateTime  @default(now())
+  sendingAt DateTime?
+  sentAt    DateTime?
+
+  externalMessageId String?
+
+  failureCode    String?
+  failureMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([setupId, notificationType, templateVersion])
+  @@index([setupId])
+  @@index([status, updatedAt])
+  @@index([status, sentAt])
 }

@@ -10,6 +10,7 @@ import {
   mapJournalEvent,
   mapJournalTrade,
   mapMarketSnapshot,
+  mapNotificationDelivery,
   mapPostTradeAnalysis,
   mapRiskCalculation,
   mapSetup,
@@ -608,6 +609,50 @@ describe("mapTradeScreenshot", () => {
       failureMessage: null,
       createdAt: new Date("2026-09-23T00:00:00Z"),
       updatedAt: new Date("2026-09-23T00:00:00Z"),
+    });
+  });
+});
+
+describe("mapNotificationDelivery", () => {
+  it("maps every field, including nullable ones, without fabricating defaults", () => {
+    const row = {
+      id: "notif-1",
+      setupId: "setup-1",
+      tradeId: null,
+      tradeSource: null,
+      provider: "TELEGRAM" as const,
+      notificationType: "SETUP_READY" as const,
+      templateVersion: "1.0.0",
+      status: "SENT" as const,
+      attemptCount: 1,
+      queuedAt: new Date("2026-09-23T00:00:00Z"),
+      sendingAt: new Date("2026-09-23T00:00:01Z"),
+      sentAt: new Date("2026-09-23T00:00:02Z"),
+      externalMessageId: "12345",
+      failureCode: null,
+      failureMessage: null,
+      createdAt: new Date("2026-09-23T00:00:00Z"),
+      updatedAt: new Date("2026-09-23T00:00:02Z"),
+    };
+
+    expect(mapNotificationDelivery(row)).toEqual({
+      id: "notif-1",
+      setupId: "setup-1",
+      tradeId: null,
+      tradeSource: null,
+      provider: "TELEGRAM",
+      notificationType: "SETUP_READY",
+      templateVersion: "1.0.0",
+      status: "SENT",
+      attemptCount: 1,
+      queuedAt: new Date("2026-09-23T00:00:00Z"),
+      sendingAt: new Date("2026-09-23T00:00:01Z"),
+      sentAt: new Date("2026-09-23T00:00:02Z"),
+      externalMessageId: "12345",
+      failureCode: null,
+      failureMessage: null,
+      createdAt: new Date("2026-09-23T00:00:00Z"),
+      updatedAt: new Date("2026-09-23T00:00:02Z"),
     });
   });
 });

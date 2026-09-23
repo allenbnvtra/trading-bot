@@ -10,6 +10,7 @@ import type {
   JournalEvent,
   JournalTrade,
   MarketSnapshot,
+  NotificationDelivery,
   PostTradeAnalysis,
   RiskCalculation,
   Setup,
@@ -27,6 +28,9 @@ import type {
   JournalEventType,
   JournalTradeStatus,
   LossCategory,
+  NotificationDeliveryStatus,
+  NotificationProviderType,
+  NotificationType,
   PostTradeOutcome,
   ScreenshotStatus,
   ScreenshotType,
@@ -695,6 +699,52 @@ export function mapTradeScreenshot(row: PrismaTradeScreenshotRow): TradeScreensh
     marketSnapshotId: row.marketSnapshotId,
     chartConfigVersion: row.chartConfigVersion,
     renderedAt: row.renderedAt,
+    failureCode: row.failureCode,
+    failureMessage: row.failureMessage,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Milestone 6: NotificationDelivery
+// ---------------------------------------------------------------------------
+
+export interface PrismaNotificationDeliveryRow {
+  id: string;
+  setupId: string | null;
+  tradeId: string | null;
+  tradeSource: TradeSource | null;
+  provider: NotificationProviderType;
+  notificationType: NotificationType;
+  templateVersion: string;
+  status: NotificationDeliveryStatus;
+  attemptCount: number;
+  queuedAt: Date;
+  sendingAt: Date | null;
+  sentAt: Date | null;
+  externalMessageId: string | null;
+  failureCode: string | null;
+  failureMessage: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export function mapNotificationDelivery(row: PrismaNotificationDeliveryRow): NotificationDelivery {
+  return {
+    id: row.id,
+    setupId: row.setupId,
+    tradeId: row.tradeId,
+    tradeSource: row.tradeSource,
+    provider: row.provider,
+    notificationType: row.notificationType,
+    templateVersion: row.templateVersion,
+    status: row.status,
+    attemptCount: row.attemptCount,
+    queuedAt: row.queuedAt,
+    sendingAt: row.sendingAt,
+    sentAt: row.sentAt,
+    externalMessageId: row.externalMessageId,
     failureCode: row.failureCode,
     failureMessage: row.failureMessage,
     createdAt: row.createdAt,
