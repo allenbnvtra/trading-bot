@@ -45,6 +45,7 @@ export class ScreenshotService {
       type: "PRE_TRADE",
       marketSnapshotId: setup.marketSnapshotId,
       chartConfigVersion: CHART_CONFIG_VERSION,
+      correlationSetupId: setupId,
     });
 
     await this.enqueueIfNeeded(GENERATE_PRE_TRADE_SCREENSHOT_JOB, screenshot, alreadyInFlight);
@@ -83,6 +84,7 @@ export class ScreenshotService {
       type: "POST_TRADE",
       marketSnapshotId: null,
       chartConfigVersion: CHART_CONFIG_VERSION,
+      correlationSetupId: trade.setupId,
     });
 
     await this.enqueueIfNeeded(GENERATE_POST_TRADE_SCREENSHOT_JOB, screenshot, alreadyInFlight);

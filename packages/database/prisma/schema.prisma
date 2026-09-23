@@ -357,6 +357,7 @@ enum JournalEventType {
   SCREENSHOT_GENERATION_STARTED
   SCREENSHOT_CREATED
   SCREENSHOT_FAILED
+  SCREENSHOT_RETRIED
 }
 
 enum JournalEntityType {
@@ -681,6 +682,16 @@ model TradeScreenshot {
 
   tradeId     String?
   tradeSource TradeSource?
+
+  // Denormalized so POST_TRADE screenshot journal events can still correlate
+  // onto their originating Setup's timeline, since setupId itself must be
+  // null for a POST_TRADE row (see assertValidScreenshotTarget in
+  // trade-screenshots.ts). Not a foreign key relation field — plain like
+  // tradeId/tradeSource above, and deliberately typed to match setupId
+  // (also a plain String, not a native Postgres uuid column) rather than
+  // an FK, since this column exists purely to carry a correlation value
+  // through to createJournalEvent, never to be joined on.
+  correlationSetupId String?
 
   type   ScreenshotType
   status ScreenshotStatus @default(REQUESTED)

@@ -23,6 +23,15 @@ export interface RequestScreenshotInput {
   type: ScreenshotType;
   marketSnapshotId: string | null;
   chartConfigVersion: string;
+  /**
+   * The originating Setup's id for a POST_TRADE (trade-targeted) screenshot,
+   * where `setupId` itself must be null — persisted onto the row so every
+   * journal event this module emits can correlate onto that Setup's
+   * timeline (see getSetupTimeline in journal-events.ts) instead of falling
+   * back to the screenshot's own id. Null for a PRE_TRADE (setup-targeted)
+   * screenshot, where `setupId` already carries the same value.
+   */
+  correlationSetupId: string | null;
 }
 
 /**
@@ -140,10 +149,27 @@ export async function requestOrRetryScreenshot(
       }
 
       if (existing) {
+        const previousFailureCode = existing.failureCode;
         const retried = await tx.tradeScreenshot.update({
           where: { id: existing.id },
           data: { status: "REQUESTED", failureCode: null, failureMessage: null },
         });
+
+        await createJournalEvent(
+          {
+            eventType: "SCREENSHOT_RETRIED",
+            entityType: "TRADE_SCREENSHOT",
+            entityId: existing.id,
+            correlationId: existing.setupId ?? existing.correlationSetupId ?? existing.id,
+            metadata: {
+              type: input.type,
+              chartConfigVersion: input.chartConfigVersion,
+              previousFailureCode,
+            },
+          },
+          tx,
+        );
+
         return { screenshot: mapTradeScreenshot(retried), alreadyInFlight: false };
       }
 
@@ -152,6 +178,7 @@ export async function requestOrRetryScreenshot(
           setupId: input.setupId,
           tradeId: input.tradeId,
           tradeSource: input.tradeSource,
+          correlationSetupId: input.correlationSetupId,
           type: input.type,
           marketSnapshotId: input.marketSnapshotId,
           chartConfigVersion: input.chartConfigVersion,
@@ -164,7 +191,7 @@ export async function requestOrRetryScreenshot(
           eventType: "SCREENSHOT_REQUESTED",
           entityType: "TRADE_SCREENSHOT",
           entityId: created.id,
-          correlationId: input.setupId ?? input.tradeId ?? created.id,
+          correlationId: input.setupId ?? input.correlationSetupId ?? created.id,
           metadata: { type: input.type, chartConfigVersion: input.chartConfigVersion },
         },
         tx,
@@ -230,7 +257,7 @@ export async function markScreenshotGenerating(id: string): Promise<TradeScreens
         eventType: "SCREENSHOT_GENERATION_STARTED",
         entityType: "TRADE_SCREENSHOT",
         entityId: id,
-        correlationId: row.setupId ?? row.tradeId ?? id,
+        correlationId: row.setupId ?? row.correlationSetupId ?? id,
         metadata: { type: row.type, chartConfigVersion: row.chartConfigVersion },
       },
       tx,
@@ -283,7 +310,7 @@ export async function markScreenshotReady(
         eventType: "SCREENSHOT_CREATED",
         entityType: "TRADE_SCREENSHOT",
         entityId: id,
-        correlationId: row.setupId ?? row.tradeId ?? id,
+        correlationId: row.setupId ?? row.correlationSetupId ?? id,
         metadata: { type: row.type, chartConfigVersion: row.chartConfigVersion },
       },
       tx,
@@ -329,8 +356,8 @@ export async function markScreenshotFailed(
         eventType: "SCREENSHOT_FAILED",
         entityType: "TRADE_SCREENSHOT",
         entityId: id,
-        correlationId: row.setupId ?? row.tradeId ?? id,
-        metadata: { failureCode: input.failureCode },
+        correlationId: row.setupId ?? row.correlationSetupId ?? id,
+        metadata: { failureCode: input.failureCode, failureMessage: input.failureMessage },
       },
       tx,
     );

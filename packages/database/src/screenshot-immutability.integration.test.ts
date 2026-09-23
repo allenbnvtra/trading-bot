@@ -88,6 +88,7 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
       type: "PRE_TRADE",
       marketSnapshotId: snapshotId,
       chartConfigVersion,
+      correlationSetupId: setupId,
     });
     await markScreenshotGenerating(requested.screenshot.id);
     const ready = await markScreenshotReady(requested.screenshot.id, {
@@ -166,6 +167,7 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
       type: "POST_TRADE",
       marketSnapshotId: null,
       chartConfigVersion: CHART_CONFIG_VERSION,
+      correlationSetupId: trade.setupId,
     });
 
     expect(postTrade.id).not.toBe(preTradeScreenshot.id);
@@ -195,6 +197,7 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
       type: "PRE_TRADE",
       marketSnapshotId: snapshot.id,
       chartConfigVersion: "2.0.0",
+      correlationSetupId: setup.id,
     });
 
     expect(v2.id).not.toBe(preTradeScreenshot.id);
@@ -221,6 +224,7 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
       type: "PRE_TRADE",
       marketSnapshotId: snapshot.id,
       chartConfigVersion: CHART_CONFIG_VERSION,
+      correlationSetupId: setup.id,
     };
 
     const first = await requestOrRetryScreenshot(requestInput);
@@ -242,6 +246,7 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
       type: "PRE_TRADE",
       marketSnapshotId: snapshot.id,
       chartConfigVersion: CHART_CONFIG_VERSION,
+      correlationSetupId: setup.id,
     };
 
     // Real concurrency: both calls are started together via Promise.all
@@ -282,6 +287,7 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
       type: "POST_TRADE",
       marketSnapshotId: null,
       chartConfigVersion: CHART_CONFIG_VERSION,
+      correlationSetupId: null,
     };
 
     // Same request twice, sequentially.
@@ -305,6 +311,7 @@ describe.skipIf(!process.env.DATABASE_URL)("screenshot immutability and idempote
       type: "POST_TRADE",
       marketSnapshotId: null,
       chartConfigVersion: CHART_CONFIG_VERSION,
+      correlationSetupId: null,
     };
     const [a, b] = await Promise.all([
       requestOrRetryScreenshot(concurrentInput),

@@ -24,13 +24,20 @@ import {
 const CHART_CONFIG_VERSION = "1.0.0";
 
 function preTradeInput(overrides: Partial<RequestScreenshotInput> = {}): RequestScreenshotInput {
+  const setupId = overrides.setupId ?? `setup-${randomUUID()}`;
   return {
-    setupId: `setup-${randomUUID()}`,
+    setupId,
     tradeId: null,
     tradeSource: null,
     type: "PRE_TRADE",
     marketSnapshotId: null,
     chartConfigVersion: CHART_CONFIG_VERSION,
+    // Mirrors ScreenshotService#requestPreTradeScreenshot, which always
+    // passes correlationSetupId: setupId even though setupId itself is
+    // already non-null here — the create-site's `??` chain prefers
+    // setupId first, so this is redundant-but-harmless for PRE_TRADE, same
+    // as production.
+    correlationSetupId: setupId,
     ...overrides,
   };
 }
@@ -43,6 +50,12 @@ function postTradeInput(overrides: Partial<RequestScreenshotInput> = {}): Reques
     type: "POST_TRADE",
     marketSnapshotId: null,
     chartConfigVersion: CHART_CONFIG_VERSION,
+    // null by default (no real originating Setup in most of this file's
+    // tests) — pass correlationSetupId explicitly via overrides when a
+    // test needs to prove the Fix 1 correlation-onto-Setup-timeline
+    // behavior (see the "POST_TRADE screenshot correlation" describe block
+    // below).
+    correlationSetupId: null,
     ...overrides,
   };
 }
@@ -85,6 +98,7 @@ describe("assertValidScreenshotTarget", () => {
         type: "PRE_TRADE",
         marketSnapshotId: null,
         chartConfigVersion: CHART_CONFIG_VERSION,
+        correlationSetupId: null,
       }),
     ).toThrow(ScreenshotTargetError);
   });
@@ -98,6 +112,7 @@ describe("assertValidScreenshotTarget", () => {
         type: "PRE_TRADE",
         marketSnapshotId: null,
         chartConfigVersion: CHART_CONFIG_VERSION,
+        correlationSetupId: null,
       }),
     ).toThrow(ScreenshotTargetError);
   });
@@ -482,5 +497,101 @@ describe.skipIf(!process.env.DATABASE_URL)("trade-screenshots repository (live P
 
     const afterWindowExpiry = await countRecentFailedScreenshots(60);
     expect(afterWindowExpiry).toBe(before);
+  });
+
+  /**
+   * Audit-trail regression coverage (journal/audit-trail review, Milestone
+   * 5 screenshot pipeline): a POST_TRADE screenshot's setupId is always
+   * null by construction (assertValidScreenshotTarget forbids setting both
+   * setupId and tradeId), so before this fix every createJournalEvent call
+   * in this module fell back to the screenshot's own id as correlationId
+   * for a POST_TRADE row — invisible to getSetupTimeline(setupId), unlike
+   * every other trade-related event. correlationSetupId is the fix: a
+   * denormalized column carrying the originating Setup's id through to
+   * every journal event this module emits for that row.
+   */
+  describe("POST_TRADE screenshot correlation onto its originating Setup's timeline (Fix 1/2/3)", () => {
+    it(
+      "a POST_TRADE screenshot's REQUESTED/GENERATION_STARTED/CREATED/FAILED/RETRIED events all " +
+        "carry the trade's originating setupId as correlationId, visible via getSetupTimeline",
+      async () => {
+        const { setup } = await seededSetup();
+        const input = postTradeInput({ correlationSetupId: setup.id });
+
+        const requested = await requestOrRetryScreenshot(input);
+        expect(requested.screenshot.setupId).toBeNull();
+
+        await markScreenshotGenerating(requested.screenshot.id);
+        await markScreenshotFailed(requested.screenshot.id, {
+          failureCode: "RENDER_TIMEOUT",
+          failureMessage: "chart renderer timed out",
+        });
+
+        // FAILED -> REQUESTED retry via the same idempotency key.
+        const retried = await requestOrRetryScreenshot(input);
+        expect(retried.screenshot.id).toBe(requested.screenshot.id);
+
+        await markScreenshotGenerating(retried.screenshot.id);
+        await markScreenshotFailed(retried.screenshot.id, {
+          failureCode: "RENDER_TIMEOUT",
+          failureMessage: "chart renderer timed out again",
+        });
+
+        const timeline = await journalEventsRepository.getSetupTimeline(setup.id);
+        const screenshotEvents = timeline.filter((e) => e.entityId === requested.screenshot.id);
+
+        expect(screenshotEvents.map((e) => e.eventType)).toEqual([
+          "SCREENSHOT_REQUESTED",
+          "SCREENSHOT_GENERATION_STARTED",
+          "SCREENSHOT_FAILED",
+          "SCREENSHOT_RETRIED",
+          "SCREENSHOT_GENERATION_STARTED",
+          "SCREENSHOT_FAILED",
+        ]);
+        for (const event of screenshotEvents) {
+          expect(event.correlationId).toBe(setup.id);
+        }
+      },
+    );
+
+    it("a retry (FAILED -> REQUESTED) emits a SCREENSHOT_RETRIED event carrying the previous failureCode", async () => {
+      const input = postTradeInput();
+      const created = await requestOrRetryScreenshot(input);
+      await markScreenshotGenerating(created.screenshot.id);
+      await markScreenshotFailed(created.screenshot.id, {
+        failureCode: "RENDER_TIMEOUT",
+        failureMessage: "chart renderer timed out",
+      });
+
+      const retried = await requestOrRetryScreenshot(input);
+      expect(retried.alreadyInFlight).toBe(false);
+      expect(retried.screenshot.status).toBe("REQUESTED");
+
+      const events = await journalEventsRepository.listJournalEvents({ entityId: created.screenshot.id });
+      const retriedEvent = events.find((e) => e.eventType === "SCREENSHOT_RETRIED");
+      expect(retriedEvent).toBeDefined();
+      expect(retriedEvent?.metadata).toMatchObject({
+        type: input.type,
+        chartConfigVersion: input.chartConfigVersion,
+        previousFailureCode: "RENDER_TIMEOUT",
+      });
+    });
+
+    it("markScreenshotFailed's journal event metadata contains failureMessage, not just failureCode", async () => {
+      const created = await requestOrRetryScreenshot(postTradeInput());
+      await markScreenshotGenerating(created.screenshot.id);
+      await markScreenshotFailed(created.screenshot.id, {
+        failureCode: "RENDER_TIMEOUT",
+        failureMessage: "chart renderer timed out after 30s",
+      });
+
+      const events = await journalEventsRepository.listJournalEvents({ entityId: created.screenshot.id });
+      const failedEvent = events.find((e) => e.eventType === "SCREENSHOT_FAILED");
+      expect(failedEvent).toBeDefined();
+      expect(failedEvent?.metadata).toMatchObject({
+        failureCode: "RENDER_TIMEOUT",
+        failureMessage: "chart renderer timed out after 30s",
+      });
+    });
   });
 });

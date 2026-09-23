@@ -189,6 +189,7 @@ export const JOURNAL_EVENT_TYPES = [
   "SCREENSHOT_GENERATION_STARTED",
   "SCREENSHOT_CREATED",
   "SCREENSHOT_FAILED",
+  "SCREENSHOT_RETRIED",
 ] as const;
 export type JournalEventType = (typeof JOURNAL_EVENT_TYPES)[number];
 
