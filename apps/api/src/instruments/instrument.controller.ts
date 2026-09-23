@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, UsePipes } from "@nestjs/common";
+import { Body, Controller, Get, Param, ParseUUIDPipe, Post, UsePipes } from "@nestjs/common";
 import { createInstrumentSchema, type CreateInstrumentInput } from "@trading-copilot/shared-types";
 import type { Instrument } from "@trading-copilot/trading-domain";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
@@ -17,5 +17,10 @@ export class InstrumentController {
   @UsePipes(new ZodValidationPipe(createInstrumentSchema))
   create(@Body() body: CreateInstrumentInput): Promise<Instrument> {
     return this.instrumentService.create(body);
+  }
+
+  @Get(":id")
+  getById(@Param("id", new ParseUUIDPipe()) id: string): Promise<Instrument> {
+    return this.instrumentService.getById(id);
   }
 }

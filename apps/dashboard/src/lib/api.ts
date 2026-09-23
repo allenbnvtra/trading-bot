@@ -293,6 +293,13 @@ export interface SetupListFilters {
  * Immutable "what the market looked like" context a Setup points at. A
  * TradingView-sourced Setup's timeframe/bar time live here, not on the
  * Setup itself - see packages/trading-domain's MarketSnapshot.
+ *
+ * This is a deliberately partial mirror of the domain type (matches this
+ * file's existing convention of hand-mirroring only the fields a dashboard
+ * route actually consumes, not every column) - `nearestSupport`/
+ * `nearestResistance` were added here because the PRE_TRADE chart render
+ * route (`app/internal/render/setup/[setupId]/page.tsx`) reads them for the
+ * chart's support/resistance annotation lines.
  */
 export interface MarketSnapshot {
   id: string;
@@ -303,9 +310,39 @@ export interface MarketSnapshot {
   atr: string | null;
   volume: string | null;
   vwap: string | null;
+  nearestSupport: string | null;
+  nearestResistance: string | null;
   session: string | null;
   marketRegime: string | null;
   metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+/**
+ * A deterministic risk calculation, always produced by
+ * packages/risk-engine and never independently computed here - see
+ * packages/trading-domain's RiskCalculation. Immutable once created: a
+ * Setup that needs a fresh calculation gets a new row, not an update to an
+ * old one.
+ */
+export interface RiskCalculation {
+  id: string;
+  setupId: string;
+  accountEquity: string;
+  riskPercentage: string;
+  riskBudget: string;
+  entryPrice: string;
+  stopPrice: string;
+  stopDistancePoints: string;
+  stopDistanceTicks: string;
+  pointValue: string;
+  tickValue: string;
+  estimatedCommission: string;
+  estimatedSlippage: string;
+  riskPerUnit: string;
+  calculatedQuantity: number;
+  estimatedTotalRisk: string;
+  riskReward: string;
   createdAt: string;
 }
 
@@ -490,6 +527,10 @@ export function getInstruments(): Promise<Instrument[]> {
   return apiFetch<Instrument[]>("/instruments");
 }
 
+export function getInstrument(id: string): Promise<Instrument> {
+  return apiFetch<Instrument>(`/instruments/${id}`);
+}
+
 export function getStrategies(): Promise<Strategy[]> {
   return apiFetch<Strategy[]>("/strategies");
 }
@@ -558,6 +599,34 @@ export function getSetupTimeline(id: string): Promise<JournalEvent[]> {
 
 export function getMarketSnapshot(id: string): Promise<MarketSnapshot> {
   return apiFetch<MarketSnapshot>(`/market-snapshots/${id}`);
+}
+
+export function getLatestRiskCalculation(setupId: string): Promise<RiskCalculation> {
+  return apiFetch<RiskCalculation>(`/setups/${setupId}/risk-calculations/latest`);
+}
+
+/**
+ * The anti-look-ahead-safe candle query (docs/screenshot-design.md). Every
+ * caller of this function must pass an authoritative decision-time
+ * timestamp as `cutoffTimestamp` (e.g. `MarketSnapshot.timestamp` for a
+ * PRE_TRADE render, `JournalTrade.exitTimestamp` for POST_TRADE) - never
+ * `new Date()` or anything client/URL-controlled. This function itself has
+ * no way to enforce that; it's a call-site responsibility - see
+ * `app/internal/render/setup/[setupId]/page.tsx`.
+ */
+export function getCandlesUpToTimestamp(
+  instrumentId: string,
+  timeframe: string,
+  cutoffTimestamp: string,
+  count: number,
+): Promise<Candle[]> {
+  const params = new URLSearchParams({
+    instrumentId,
+    timeframe,
+    cutoffTimestamp,
+    count: String(count),
+  });
+  return apiFetch<Candle[]>(`/market-data/candles?${params.toString()}`);
 }
 
 export function getJournalTrades(filters: JournalTradeFilters = {}): Promise<JournalTrade[]> {

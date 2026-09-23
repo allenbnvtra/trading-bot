@@ -7,7 +7,7 @@ import { InstrumentService } from "./instrument.service";
 describe("InstrumentController", () => {
   it("delegates listing to InstrumentService", async () => {
     const instruments = [{ id: "1" } as Instrument];
-    const instrumentService = { list: vi.fn().mockResolvedValue(instruments), create: vi.fn() };
+    const instrumentService = { list: vi.fn().mockResolvedValue(instruments), create: vi.fn(), getById: vi.fn() };
 
     const moduleRef = await Test.createTestingModule({
       controllers: [InstrumentController],
@@ -21,7 +21,7 @@ describe("InstrumentController", () => {
 
   it("delegates creation to InstrumentService with the validated body", async () => {
     const created = { id: "2" } as Instrument;
-    const instrumentService = { list: vi.fn(), create: vi.fn().mockResolvedValue(created) };
+    const instrumentService = { list: vi.fn(), create: vi.fn().mockResolvedValue(created), getById: vi.fn() };
 
     const moduleRef = await Test.createTestingModule({
       controllers: [InstrumentController],
@@ -45,5 +45,23 @@ describe("InstrumentController", () => {
 
     await expect(controller.create(body)).resolves.toBe(created);
     expect(instrumentService.create).toHaveBeenCalledWith(body);
+  });
+
+  it("delegates getById to InstrumentService with the path param", async () => {
+    const instrument = { id: "3" } as Instrument;
+    const instrumentService = {
+      list: vi.fn(),
+      create: vi.fn(),
+      getById: vi.fn().mockResolvedValue(instrument),
+    };
+
+    const moduleRef = await Test.createTestingModule({
+      controllers: [InstrumentController],
+      providers: [{ provide: InstrumentService, useValue: instrumentService }],
+    }).compile();
+
+    const controller = moduleRef.get(InstrumentController);
+    await expect(controller.getById("3")).resolves.toBe(instrument);
+    expect(instrumentService.getById).toHaveBeenCalledWith("3");
   });
 });
