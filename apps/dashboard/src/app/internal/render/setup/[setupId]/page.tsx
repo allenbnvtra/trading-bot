@@ -13,11 +13,12 @@ import {
 // safe and does NOT repeat Task 6's problem (ChartRenderer had to drop this
 // same dependency because it's a "use client" component whose imports do
 // get bundled, and shared-types' barrel transitively pulls in node:crypto).
-// The sibling RenderClient.tsx IS a client component and must never import
-// from shared-types - any constant it needs is passed down from here as a
-// plain prop instead.
+// The shared RenderClient.tsx (../../RenderClient, also used by the
+// POST_TRADE trade render route) IS a client component and must never
+// import from shared-types - any constant it needs is passed down from here
+// as a plain prop instead.
 import { CHART_CONFIG_VERSION, PRE_TRADE_CANDLE_COUNT_DEFAULT } from "@trading-copilot/shared-types";
-import RenderClient from "./RenderClient";
+import RenderClient from "../../RenderClient";
 
 /**
  * Internal, Playwright-only route (Task 9, not yet built) that renders a
@@ -97,6 +98,7 @@ export default async function RenderSetupPage({
 
   return (
     <RenderClient
+      screenshotType="PRE_TRADE"
       instrument={instrument ? { symbol: instrument.symbol, tickSize: instrument.tickSize } : null}
       timeframe={snapshot.timeframe}
       strategyLabel={strategyLabel}
