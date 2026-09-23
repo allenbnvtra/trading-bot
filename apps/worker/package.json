@@ -13,6 +13,7 @@
     "notification:test": "tsx scripts/notification-test.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.122.0",
     "@trading-copilot/ai-provider": "workspace:*",
     "@trading-copilot/analytics": "workspace:*",
     "@trading-copilot/backtester": "workspace:*",
