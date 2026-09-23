@@ -22,11 +22,15 @@ import {
   type UpdateSetupStatusInput,
 } from "@trading-copilot/shared-types";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { ScreenshotService } from "../screenshots/screenshot.service";
 import { SetupService } from "./setup.service";
 
 @Controller("setups")
 export class SetupController {
-  constructor(private readonly setupService: SetupService) {}
+  constructor(
+    private readonly setupService: SetupService,
+    private readonly screenshotService: ScreenshotService,
+  ) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -76,5 +80,24 @@ export class SetupController {
   @Get(":id/risk-calculations/latest")
   getLatestRiskCalculation(@Param("id", new ParseUUIDPipe()) id: string) {
     return this.setupService.getLatestRiskCalculation(id);
+  }
+
+  @Get(":id/screenshots")
+  listScreenshots(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.screenshotService.listForSetup(id);
+  }
+
+  /**
+   * Manual/admin trigger - idempotent, returns the existing row if a
+   * PRE_TRADE screenshot has already been requested or generated for this
+   * Setup at the current CHART_CONFIG_VERSION. The automatic trigger on the
+   * READY transition (see setup.service.ts#updateStatus) is what fires this
+   * in the normal flow; this route exists for manual re-requests (e.g. after
+   * a FAILED render) without needing to force another status transition.
+   */
+  @Post(":id/screenshots/pre-trade")
+  @HttpCode(HttpStatus.ACCEPTED)
+  requestPreTradeScreenshot(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.screenshotService.requestPreTradeScreenshot(id);
   }
 }

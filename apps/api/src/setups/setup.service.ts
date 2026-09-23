@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import Decimal from "decimal.js";
 import { journalEventsRepository, riskCalculationsRepository, setupsRepository } from "@trading-copilot/database";
 import type {
@@ -8,6 +8,7 @@ import type {
   UpdateSetupStatusInput,
 } from "@trading-copilot/shared-types";
 import type { JournalEvent, RiskCalculation, Setup } from "@trading-copilot/trading-domain";
+import { ScreenshotService } from "../screenshots/screenshot.service";
 
 /**
  * Converts validated request strings to Date/Decimal here, at the service
@@ -20,6 +21,10 @@ import type { JournalEvent, RiskCalculation, Setup } from "@trading-copilot/trad
  */
 @Injectable()
 export class SetupService {
+  private readonly logger = new Logger(SetupService.name);
+
+  constructor(private readonly screenshotService: ScreenshotService) {}
+
   create(input: CreateSetupInput): Promise<Setup> {
     return setupsRepository.createSetup({
       instrumentId: input.instrumentId,
@@ -59,11 +64,25 @@ export class SetupService {
     return setup;
   }
 
-  updateStatus(id: string, input: UpdateSetupStatusInput): Promise<Setup> {
-    return setupsRepository.transitionSetupStatus(id, {
+  async updateStatus(id: string, input: UpdateSetupStatusInput): Promise<Setup> {
+    const setup = await setupsRepository.transitionSetupStatus(id, {
       status: input.status,
       decisionSummary: input.decisionSummary ?? null,
     });
+
+    // Screenshot generation is best-effort and must never fail the status
+    // transition it is a side effect of — see the milestone brief's
+    // "When to generate PRE_TRADE screenshot": a READY setup should have a
+    // PRE_TRADE screenshot or a queued generation record, but a screenshot
+    // subsystem hiccup is never a reason to reject an otherwise-valid
+    // WATCH/PREPARE/READY/REJECTED/INVALIDATED/EXPIRED transition.
+    if (setup.status === "READY") {
+      await this.screenshotService.requestPreTradeScreenshot(setup.id).catch((err: unknown) => {
+        this.logger.warn(`Failed to request PRE_TRADE screenshot for Setup ${setup.id}: ${String(err)}`);
+      });
+    }
+
+    return setup;
   }
 
   async getTimeline(id: string): Promise<JournalEvent[]> {

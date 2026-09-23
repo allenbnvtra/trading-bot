@@ -10,11 +10,15 @@ import {
   type RecordJournalTradeEntryInput,
 } from "@trading-copilot/shared-types";
 import { ZodValidationPipe } from "../common/zod-validation.pipe";
+import { ScreenshotService } from "../screenshots/screenshot.service";
 import { JournalTradeService } from "./journal-trade.service";
 
 @Controller("journal/trades")
 export class JournalTradeController {
-  constructor(private readonly journalTradeService: JournalTradeService) {}
+  constructor(
+    private readonly journalTradeService: JournalTradeService,
+    private readonly screenshotService: ScreenshotService,
+  ) {}
 
   @Post()
   @HttpCode(HttpStatus.CREATED)
@@ -48,5 +52,22 @@ export class JournalTradeController {
     @Body(new ZodValidationPipe(closeJournalTradeSchema)) body: CloseJournalTradeInput,
   ) {
     return this.journalTradeService.close(id, body);
+  }
+
+  @Get(":id/screenshots")
+  listScreenshots(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.screenshotService.listForTrade(id);
+  }
+
+  /**
+   * Manual/admin trigger - idempotent, returns the existing row if a
+   * POST_TRADE screenshot has already been requested or generated for this
+   * trade. The automatic trigger on close (see
+   * journal-trade.service.ts#close) is what fires this in the normal flow.
+   */
+  @Post(":id/screenshots/post-trade")
+  @HttpCode(HttpStatus.ACCEPTED)
+  requestPostTradeScreenshot(@Param("id", new ParseUUIDPipe()) id: string) {
+    return this.screenshotService.requestPostTradeScreenshot(id);
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from "@nestjs/common";
+import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import Decimal from "decimal.js";
 import { journalTradesRepository } from "@trading-copilot/database";
 import type {
@@ -8,6 +8,7 @@ import type {
   RecordJournalTradeEntryInput,
 } from "@trading-copilot/shared-types";
 import type { JournalTrade } from "@trading-copilot/trading-domain";
+import { ScreenshotService } from "../screenshots/screenshot.service";
 
 /**
  * JournalTradeStateError raised by recordJournalTradeEntry/closeJournalTrade
@@ -17,6 +18,10 @@ import type { JournalTrade } from "@trading-copilot/trading-domain";
  */
 @Injectable()
 export class JournalTradeService {
+  private readonly logger = new Logger(JournalTradeService.name);
+
+  constructor(private readonly screenshotService: ScreenshotService) {}
+
   create(input: CreateJournalTradeInput): Promise<JournalTrade> {
     return journalTradesRepository.createJournalTrade({
       setupId: input.setupId ?? null,
@@ -64,8 +69,8 @@ export class JournalTradeService {
     });
   }
 
-  close(id: string, input: CloseJournalTradeInput): Promise<JournalTrade> {
-    return journalTradesRepository.closeJournalTrade(id, {
+  async close(id: string, input: CloseJournalTradeInput): Promise<JournalTrade> {
+    const trade = await journalTradesRepository.closeJournalTrade(id, {
       actualExit: new Decimal(input.actualExit),
       exitTimestamp: new Date(input.exitTimestamp),
       actualFees: input.actualFees ? new Decimal(input.actualFees) : null,
@@ -74,5 +79,18 @@ export class JournalTradeService {
       mae: input.mae ? new Decimal(input.mae) : null,
       exitNotes: input.exitNotes ?? null,
     });
+
+    // Screenshot generation is best-effort and must never fail the close
+    // operation it is a side effect of — same convention as
+    // setup.service.ts's READY-transition trigger. Fires regardless of
+    // whether this trade was created from a Setup (trade.setupId set) or
+    // stands alone (setupId: null, e.g. a manually-logged trade) —
+    // ScreenshotService.requestPostTradeScreenshot keys a POST_TRADE
+    // screenshot on tradeId alone, never on setupId.
+    await this.screenshotService.requestPostTradeScreenshot(trade.id).catch((err: unknown) => {
+      this.logger.warn(`Failed to request POST_TRADE screenshot for JournalTrade ${trade.id}: ${String(err)}`);
+    });
+
+    return trade;
   }
 }

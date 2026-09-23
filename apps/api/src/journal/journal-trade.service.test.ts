@@ -23,10 +23,12 @@ vi.mock("@trading-copilot/database", async () => {
 
 describe("JournalTradeService", () => {
   let service: JournalTradeService;
+  let screenshotService: { requestPostTradeScreenshot: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new JournalTradeService();
+    screenshotService = { requestPostTradeScreenshot: vi.fn().mockResolvedValue({}) };
+    service = new JournalTradeService(screenshotService as never);
   });
 
   describe("getById", () => {
@@ -101,6 +103,36 @@ describe("JournalTradeService", () => {
       await expect(
         service.close("trade-1", { actualExit: "110", exitTimestamp: "2024-01-02T00:00:00.000Z" }),
       ).rejects.toBeInstanceOf(JournalTradeStateError);
+      expect(screenshotService.requestPostTradeScreenshot).not.toHaveBeenCalled();
+    });
+
+    it("requests a POST_TRADE screenshot after a trade closes", async () => {
+      journalTradesRepository.closeJournalTrade.mockResolvedValue({ id: "trade-1", status: "CLOSED" } as never);
+
+      await service.close("trade-1", { actualExit: "110", exitTimestamp: "2024-01-02T00:00:00.000Z" });
+
+      expect(screenshotService.requestPostTradeScreenshot).toHaveBeenCalledWith("trade-1");
+    });
+
+    it("requests a POST_TRADE screenshot even when the trade has no setupId (a standalone JournalTrade)", async () => {
+      journalTradesRepository.closeJournalTrade.mockResolvedValue({
+        id: "trade-1",
+        setupId: null,
+        status: "CLOSED",
+      } as never);
+
+      await service.close("trade-1", { actualExit: "110", exitTimestamp: "2024-01-02T00:00:00.000Z" });
+
+      expect(screenshotService.requestPostTradeScreenshot).toHaveBeenCalledWith("trade-1");
+    });
+
+    it("does not let a screenshot-request failure fail the close operation itself", async () => {
+      journalTradesRepository.closeJournalTrade.mockResolvedValue({ id: "trade-1", status: "CLOSED" } as never);
+      screenshotService.requestPostTradeScreenshot.mockRejectedValue(new Error("queue down"));
+
+      await expect(
+        service.close("trade-1", { actualExit: "110", exitTimestamp: "2024-01-02T00:00:00.000Z" }),
+      ).resolves.toMatchObject({ id: "trade-1", status: "CLOSED" });
     });
   });
 });

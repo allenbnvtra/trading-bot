@@ -60,10 +60,12 @@ function makeSetup(overrides: Partial<Setup> = {}): Setup {
 
 describe("SetupService", () => {
   let service: SetupService;
+  let screenshotService: { requestPreTradeScreenshot: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.clearAllMocks();
-    service = new SetupService();
+    screenshotService = { requestPreTradeScreenshot: vi.fn().mockResolvedValue({}) };
+    service = new SetupService(screenshotService as never);
   });
 
   describe("getById", () => {
@@ -105,6 +107,31 @@ describe("SetupService", () => {
       expect(setupsRepository.transitionSetupStatus).toHaveBeenCalledWith("setup-1", {
         status: "READY",
         decisionSummary: "looks good",
+      });
+    });
+
+    it("requests a PRE_TRADE screenshot when a Setup transitions to READY", async () => {
+      setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "READY" } as never);
+
+      await service.updateStatus("setup-1", { status: "READY" });
+
+      expect(screenshotService.requestPreTradeScreenshot).toHaveBeenCalledWith("setup-1");
+    });
+
+    it("does not request a screenshot for a non-READY transition", async () => {
+      setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "PREPARE" } as never);
+
+      await service.updateStatus("setup-1", { status: "PREPARE" });
+
+      expect(screenshotService.requestPreTradeScreenshot).not.toHaveBeenCalled();
+    });
+
+    it("does not let a screenshot-request failure fail the status transition itself", async () => {
+      setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "READY" } as never);
+      screenshotService.requestPreTradeScreenshot.mockRejectedValue(new Error("queue down"));
+
+      await expect(service.updateStatus("setup-1", { status: "READY" })).resolves.toMatchObject({
+        status: "READY",
       });
     });
   });

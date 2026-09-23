@@ -1,4 +1,5 @@
 import { Module } from "@nestjs/common";
+import { ScreenshotModule } from "../screenshots/screenshot.module";
 import { JournalEventController } from "./journal-event.controller";
 import { JournalEventService } from "./journal-event.service";
 import { JournalTradeController } from "./journal-trade.controller";
@@ -7,6 +8,7 @@ import { PostTradeAnalysisController } from "./post-trade-analysis.controller";
 import { PostTradeAnalysisService } from "./post-trade-analysis.service";
 
 @Module({
+  imports: [ScreenshotModule],
   controllers: [JournalTradeController, JournalEventController, PostTradeAnalysisController],
   providers: [JournalTradeService, JournalEventService, PostTradeAnalysisService],
 })
