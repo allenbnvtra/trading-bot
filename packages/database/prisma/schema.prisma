@@ -744,5 +744,6 @@ model InboundWebhookEvent {
 
   @@index([provider, receivedAt])
   @@index([processingStatus])
+  @@index([processingStatus, receivedAt])
   @@index([setupId])
 }

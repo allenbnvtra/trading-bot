@@ -73,24 +73,23 @@ export class HealthService implements OnModuleDestroy {
   }
 
   /**
-   * Reuses the already-reviewed listInboundWebhookEvents query (newest
-   * receivedAt first) rather than adding a new repository function -
-   * packages/database/src/repositories/inbound-webhook-events.ts is
-   * treated as frozen for this milestone. Listing every event just to read
-   * the first one is wasteful at real scale; acceptable for a personal
-   * research tool's /health check today, worth revisiting with a
-   * dedicated "most recent event" query if InboundWebhookEvent volume ever
-   * makes this slow.
+   * Uses two dedicated indexed `take: 1` queries -
+   * findMostRecentInboundWebhookEvent (backed by `[provider, receivedAt]`)
+   * and findMostRecentProcessedInboundWebhookEvent (backed by
+   * `[processingStatus, receivedAt]`) - rather than listing every
+   * InboundWebhookEvent just to read the first one. See
+   * packages/database/src/repositories/inbound-webhook-events.ts.
    */
   private async checkTradingViewIngestion(): Promise<TradingViewIngestionHealth> {
     try {
-      const events = await inboundWebhookEventsRepository.listInboundWebhookEvents({});
-      const mostRecent = events[0];
+      const [mostRecent, lastSuccessful] = await Promise.all([
+        inboundWebhookEventsRepository.findMostRecentInboundWebhookEvent(),
+        inboundWebhookEventsRepository.findMostRecentProcessedInboundWebhookEvent(),
+      ]);
+
       if (!mostRecent) {
         return { status: "UNKNOWN", lastEventAt: null, lastSuccessfulProcessingAt: null };
       }
-
-      const lastSuccessful = events.find((event) => event.processingStatus === "PROCESSED");
 
       return {
         status: mostRecent.processingStatus === "FAILED" ? "DEGRADED" : "ONLINE",

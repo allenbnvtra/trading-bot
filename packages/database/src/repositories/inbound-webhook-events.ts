@@ -372,6 +372,31 @@ export async function listInboundWebhookEvents(
   return rows.map(mapInboundWebhookEvent);
 }
 
+/**
+ * The single most recent InboundWebhookEvent, regardless of outcome. Backed
+ * by the `[provider, receivedAt]` index — a `take: 1` query, never a full
+ * table scan (see docs/tradingview-setup.md "Known limitations", now
+ * fixed). Used only by GET /health.
+ */
+export async function findMostRecentInboundWebhookEvent(): Promise<InboundWebhookEvent | null> {
+  const row = await prisma.inboundWebhookEvent.findFirst({
+    orderBy: { receivedAt: "desc" },
+  });
+  return row ? mapInboundWebhookEvent(row) : null;
+}
+
+/**
+ * The single most recent InboundWebhookEvent that reached PROCESSED.
+ * Backed by the `[processingStatus, receivedAt]` index.
+ */
+export async function findMostRecentProcessedInboundWebhookEvent(): Promise<InboundWebhookEvent | null> {
+  const row = await prisma.inboundWebhookEvent.findFirst({
+    where: { processingStatus: "PROCESSED" },
+    orderBy: { receivedAt: "desc" },
+  });
+  return row ? mapInboundWebhookEvent(row) : null;
+}
+
 /** Mirrors getSetupTimelineRaw in journal-events.ts: this webhook event's own ingestion trail. */
 export async function getInboundWebhookEventTimelineRaw(id: string): Promise<PrismaJournalEventRow[]> {
   return listJournalEventRows({ correlationId: id });
