@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import { Injectable, type OnModuleDestroy } from "@nestjs/common";
 import Redis from "ioredis";
 import { inboundWebhookEventsRepository, prisma, tradeScreenshotsRepository } from "@trading-copilot/database";
-import { LocalDiskScreenshotStorage, type ScreenshotStorage } from "@trading-copilot/screenshot-storage";
+import {
+  LocalDiskScreenshotStorage,
+  resolveScreenshotStorageRoot,
+  type ScreenshotStorage,
+} from "@trading-copilot/screenshot-storage";
 
 export interface TradingViewIngestionHealth {
   status: "ONLINE" | "DEGRADED" | "UNKNOWN";
@@ -49,13 +53,16 @@ export class HealthService implements OnModuleDestroy {
   });
 
   // Mirrors apps/api/src/screenshots/screenshot-storage.provider.ts exactly
-  // (same env var, same LocalDiskScreenshotStorage), instantiated directly
-  // as a class property rather than injected via HealthModule - the same
-  // choice already made above for `redis`, so HealthService stays a plain
-  // dependency-status check with no need to wire ScreenshotModule's DI
-  // token into a module that has nothing else to do with screenshots.
+  // (same env var, same LocalDiskScreenshotStorage, same
+  // resolveScreenshotStorageRoot anchoring against the monorepo root
+  // rather than this process's own cwd - see that file for the full
+  // explanation), instantiated directly as a class property rather than
+  // injected via HealthModule - the same choice already made above for
+  // `redis`, so HealthService stays a plain dependency-status check with no
+  // need to wire ScreenshotModule's DI token into a module that has
+  // nothing else to do with screenshots.
   private readonly screenshotStorage: ScreenshotStorage = new LocalDiskScreenshotStorage(
-    process.env.SCREENSHOT_STORAGE_ROOT ?? "./storage/screenshots",
+    resolveScreenshotStorageRoot(process.env.SCREENSHOT_STORAGE_ROOT ?? "./storage/screenshots"),
   );
 
   async check(): Promise<HealthStatus> {

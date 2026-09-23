@@ -26,6 +26,12 @@ vi.mock("@trading-copilot/screenshot-storage", () => ({
     delete: vi.fn().mockResolvedValue(undefined),
     exists: vi.fn().mockResolvedValue(true),
   })),
+  // HealthService resolves SCREENSHOT_STORAGE_ROOT via
+  // resolveScreenshotStorageRoot (same as the production provider) before
+  // constructing LocalDiskScreenshotStorage; this test only cares about the
+  // mocked storage behavior above, so it stubs the resolver as an identity
+  // function rather than pulling in the real monorepo-root-walking logic.
+  resolveScreenshotStorageRoot: vi.fn((root: string) => root),
 }));
 
 import { inboundWebhookEventsRepository, tradeScreenshotsRepository } from "@trading-copilot/database";
