@@ -9,7 +9,8 @@
     "start": "node dist/main.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src",
-    "test": "vitest run"
+    "test": "vitest run",
+    "notification:test": "tsx scripts/notification-test.ts"
   },
   "dependencies": {
     "@trading-copilot/backtester": "workspace:*",
@@ -36,6 +37,7 @@
     "@swc/helpers": "^0.5.23",
     "@types/node": "^20.17.9",
     "concurrently": "^9.1.2",
+    "tsx": "^4.19.2",
     "typescript": "^5.6.3",
     "unplugin-swc": "^1.6.0",
     "vitest": "^2.1.4"
