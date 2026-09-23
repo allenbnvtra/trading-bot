@@ -1,6 +1,7 @@
 import { ConflictException, Injectable, Logger, NotFoundException } from "@nestjs/common";
 import Decimal from "decimal.js";
 import {
+  JournalTradeActiveDecisionConflictError,
   journalEventsRepository,
   journalTradesRepository,
   notificationDeliveriesRepository,
@@ -42,6 +43,20 @@ export class SetupService {
     private readonly screenshotService: ScreenshotService,
     private readonly notificationService: NotificationService,
   ) {}
+
+  /**
+   * Single source of truth for the "contradictory decision" conflict
+   * message, used by both layers that can catch this race for execute()/
+   * skip(): the app-level findJournalTradeBySetupId fast-path check below,
+   * and the catch block translating a JournalTradeActiveDecisionConflictError
+   * (the real DB constraint on JournalTrade_setupId_active_decision_key —
+   * see that error's doc comment in packages/database/src/errors.ts). Both
+   * produce the exact same ConflictException, so a caller can never tell
+   * which layer actually caught the race.
+   */
+  private conflictingDecisionMessage(setupId: string, action: "execute" | "skip"): string {
+    return `Setup ${setupId} already has a recorded trade decision (execute or skip) — cannot ${action} it again`;
+  }
 
   create(input: CreateSetupInput): Promise<Setup> {
     return setupsRepository.createSetup({
@@ -227,9 +242,7 @@ export class SetupService {
     // codebase has no automated caller of either endpoint.
     const existingTrade = await journalTradesRepository.findJournalTradeBySetupId(setupId);
     if (existingTrade) {
-      throw new ConflictException(
-        `Setup ${setupId} already has a recorded trade decision (execute or skip) — cannot execute it again`,
-      );
+      throw new ConflictException(this.conflictingDecisionMessage(setupId, "execute"));
     }
 
     // estimatedTotalRisk (riskPerUnit * calculatedQuantity), not riskBudget
@@ -242,25 +255,36 @@ export class SetupService {
     const latestRiskCalculation = await riskCalculationsRepository.getLatestRiskCalculation(setupId);
     const plannedRisk = latestRiskCalculation ? new Decimal(latestRiskCalculation.estimatedTotalRisk.toString()) : null;
 
-    return journalTradesRepository.createAndRecordJournalTradeEntry({
-      setupId: setup.id,
-      instrumentId: setup.instrumentId,
-      strategyId: setup.strategyId,
-      strategyVersionId: setup.strategyVersionId,
-      direction: setup.direction,
-      plannedEntry: setup.plannedEntry,
-      plannedStop: setup.plannedStop ?? setup.plannedEntry,
-      plannedTarget1: setup.plannedTarget1,
-      plannedTarget2: setup.plannedTarget2,
-      plannedRisk,
-      executionMode: input.executionMode,
-      actualEntry: new Decimal(input.actualEntry),
-      quantity: input.quantity,
-      entryTimestamp: new Date(input.entryTimestamp),
-      actualFees: input.actualFees ? new Decimal(input.actualFees) : null,
-      actualSlippage: input.actualSlippage ? new Decimal(input.actualSlippage) : null,
-      notes: input.notes ?? null,
-    });
+    try {
+      return await journalTradesRepository.createAndRecordJournalTradeEntry({
+        setupId: setup.id,
+        instrumentId: setup.instrumentId,
+        strategyId: setup.strategyId,
+        strategyVersionId: setup.strategyVersionId,
+        direction: setup.direction,
+        plannedEntry: setup.plannedEntry,
+        plannedStop: setup.plannedStop ?? setup.plannedEntry,
+        plannedTarget1: setup.plannedTarget1,
+        plannedTarget2: setup.plannedTarget2,
+        plannedRisk,
+        executionMode: input.executionMode,
+        actualEntry: new Decimal(input.actualEntry),
+        quantity: input.quantity,
+        entryTimestamp: new Date(input.entryTimestamp),
+        actualFees: input.actualFees ? new Decimal(input.actualFees) : null,
+        actualSlippage: input.actualSlippage ? new Decimal(input.actualSlippage) : null,
+        notes: input.notes ?? null,
+      });
+    } catch (error) {
+      // True concurrency safety net behind the findJournalTradeBySetupId
+      // check above — see JournalTradeActiveDecisionConflictError's doc
+      // comment. Translated to the exact same ConflictException the
+      // fast-path check above already throws for this situation.
+      if (error instanceof JournalTradeActiveDecisionConflictError) {
+        throw new ConflictException(this.conflictingDecisionMessage(setupId, "execute"));
+      }
+      throw error;
+    }
   }
 
   /**
@@ -283,25 +307,33 @@ export class SetupService {
     // DB-level constraint.
     const existingTrade = await journalTradesRepository.findJournalTradeBySetupId(setupId);
     if (existingTrade) {
-      throw new ConflictException(
-        `Setup ${setupId} already has a recorded trade decision (execute or skip) — cannot skip it again`,
-      );
+      throw new ConflictException(this.conflictingDecisionMessage(setupId, "skip"));
     }
 
-    return journalTradesRepository.createJournalTrade({
-      setupId: setup.id,
-      instrumentId: setup.instrumentId,
-      strategyId: setup.strategyId,
-      strategyVersionId: setup.strategyVersionId,
-      direction: setup.direction,
-      plannedEntry: setup.plannedEntry,
-      plannedStop: setup.plannedStop ?? setup.plannedEntry,
-      plannedTarget1: setup.plannedTarget1,
-      plannedTarget2: setup.plannedTarget2,
-      plannedRisk: null,
-      executionMode: "SKIPPED",
-      skipReason: input.reason ?? null,
-      entryNotes: null,
-    });
+    try {
+      return await journalTradesRepository.createJournalTrade({
+        setupId: setup.id,
+        instrumentId: setup.instrumentId,
+        strategyId: setup.strategyId,
+        strategyVersionId: setup.strategyVersionId,
+        direction: setup.direction,
+        plannedEntry: setup.plannedEntry,
+        plannedStop: setup.plannedStop ?? setup.plannedEntry,
+        plannedTarget1: setup.plannedTarget1,
+        plannedTarget2: setup.plannedTarget2,
+        plannedRisk: null,
+        executionMode: "SKIPPED",
+        skipReason: input.reason ?? null,
+        entryNotes: null,
+      });
+    } catch (error) {
+      // True concurrency safety net behind the findJournalTradeBySetupId
+      // check above — see execute()'s identical catch and
+      // JournalTradeActiveDecisionConflictError's doc comment.
+      if (error instanceof JournalTradeActiveDecisionConflictError) {
+        throw new ConflictException(this.conflictingDecisionMessage(setupId, "skip"));
+      }
+      throw error;
+    }
   }
 }

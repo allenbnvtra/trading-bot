@@ -1,5 +1,6 @@
 import { ArgumentsHost, Catch, ConflictException, type ExceptionFilter, NotFoundException } from "@nestjs/common";
 import {
+  JournalTradeActiveDecisionConflictError,
   JournalTradeStateError,
   NotFoundError,
   SetupIncompletePlanError,
@@ -13,11 +14,33 @@ import type { Response } from "express";
  * HttpException, so without this filter they would surface as unhandled
  * 500s. Registered once in main.ts via `app.useGlobalFilters(...)` rather
  * than being caught/translated by hand in every service method.
+ *
+ * JournalTradeActiveDecisionConflictError is also explicitly caught by
+ * SetupService.execute()/skip() themselves (see setup.service.ts), which
+ * translate it into the exact same ConflictException message their existing
+ * findJournalTradeBySetupId fast-path check already produces — so it never
+ * actually reaches this filter from those two call sites. It is listed here
+ * as well purely as a defensive fallback for any other caller of
+ * createJournalTrade/createAndRecordJournalTradeEntry (e.g.
+ * JournalTradeService.create, the manual journal-trade endpoint), so a
+ * genuine constraint violation there still becomes a clean 409 rather than
+ * an unhandled 500.
  */
-@Catch(NotFoundError, SetupTransitionError, JournalTradeStateError, SetupIncompletePlanError)
+@Catch(
+  NotFoundError,
+  SetupTransitionError,
+  JournalTradeStateError,
+  SetupIncompletePlanError,
+  JournalTradeActiveDecisionConflictError,
+)
 export class DomainErrorFilter implements ExceptionFilter {
   catch(
-    exception: NotFoundError | SetupTransitionError | JournalTradeStateError | SetupIncompletePlanError,
+    exception:
+      | NotFoundError
+      | SetupTransitionError
+      | JournalTradeStateError
+      | SetupIncompletePlanError
+      | JournalTradeActiveDecisionConflictError,
     host: ArgumentsHost,
   ): void {
     const httpException =

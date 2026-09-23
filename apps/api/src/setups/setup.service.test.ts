@@ -1,7 +1,11 @@
 import { ConflictException, NotFoundException } from "@nestjs/common";
 import Decimal from "decimal.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { NotFoundError, SetupTransitionError } from "@trading-copilot/database";
+import {
+  JournalTradeActiveDecisionConflictError,
+  NotFoundError,
+  SetupTransitionError,
+} from "@trading-copilot/database";
 import type { Setup } from "@trading-copilot/trading-domain";
 import { SetupService } from "./setup.service";
 
@@ -451,6 +455,32 @@ describe("SetupService", () => {
       expect(journalTradesRepository.findJournalTradeBySetupId).toHaveBeenCalledWith("setup-1");
       expect(journalTradesRepository.createAndRecordJournalTradeEntry).toHaveBeenCalledTimes(1);
     });
+
+    it("translates a JournalTradeActiveDecisionConflictError from the repository into the same ConflictException the fast-path check produces (true concurrency race behind the app-level guard)", async () => {
+      const setup = makeSetup({ id: "setup-1", status: "READY" });
+      setupsRepository.getSetup.mockResolvedValue(setup);
+      riskCalculationsRepository.getLatestRiskCalculation.mockResolvedValue(null);
+      // The fast-path findJournalTradeBySetupId check sees nothing (its own
+      // read happened before a genuinely concurrent racer committed) — only
+      // the DB-level constraint, surfaced here as
+      // JournalTradeActiveDecisionConflictError, catches this case.
+      journalTradesRepository.findJournalTradeBySetupId.mockResolvedValue(null);
+      journalTradesRepository.createAndRecordJournalTradeEntry.mockRejectedValue(
+        new JournalTradeActiveDecisionConflictError("setup-1"),
+      );
+
+      const attempt = service.execute("setup-1", {
+        executionMode: "PAPER",
+        actualEntry: "100.5",
+        quantity: 1,
+        entryTimestamp: "2026-09-23T00:00:00.000Z",
+      });
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toMatchObject({
+        message: "Setup setup-1 already has a recorded trade decision (execute or skip) — cannot execute it again",
+      });
+    });
   });
 
   describe("skip", () => {
@@ -529,6 +559,22 @@ describe("SetupService", () => {
 
       expect(journalTradesRepository.findJournalTradeBySetupId).toHaveBeenCalledWith("setup-1");
       expect(journalTradesRepository.createJournalTrade).not.toHaveBeenCalled();
+    });
+
+    it("translates a JournalTradeActiveDecisionConflictError from the repository into the same ConflictException the fast-path check produces (true concurrency race behind the app-level guard)", async () => {
+      const setup = makeSetup({ id: "setup-1", status: "READY" });
+      setupsRepository.getSetup.mockResolvedValue(setup);
+      journalTradesRepository.findJournalTradeBySetupId.mockResolvedValue(null);
+      journalTradesRepository.createJournalTrade.mockRejectedValue(
+        new JournalTradeActiveDecisionConflictError("setup-1"),
+      );
+
+      const attempt = service.skip("setup-1", { reason: "PRICE_MOVED" });
+
+      await expect(attempt).rejects.toBeInstanceOf(ConflictException);
+      await expect(attempt).rejects.toMatchObject({
+        message: "Setup setup-1 already has a recorded trade decision (execute or skip) — cannot skip it again",
+      });
     });
   });
 });

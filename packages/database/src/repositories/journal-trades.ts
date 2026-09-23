@@ -1,12 +1,36 @@
 import { Decimal } from "decimal.js";
+import { Prisma } from "@prisma/client";
 import { calculateExcursions, calculateGrossPnl, calculateNetPnl, calculateRMultiple } from "@trading-copilot/risk-engine";
 import type { Direction, ExecutionMode, PostTradeOutcome, SkipReason, Timeframe } from "@trading-copilot/shared-types";
 import type { JournalTrade } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
-import { JournalTradeStateError, NotFoundError } from "../errors";
+import { JournalTradeActiveDecisionConflictError, JournalTradeStateError, NotFoundError } from "../errors";
 import { mapJournalTrade } from "../mappers";
 import { getCandles } from "./candles";
 import { createJournalEvent } from "./journal-events";
+
+/**
+ * Mirrors inbound-webhook-events.ts's and trade-screenshots.ts's
+ * isUniqueConstraintViolation exactly: a type-safe P2002 check that also
+ * verifies the violated constraint is genuinely the one this call cares
+ * about (`error.meta.target` includes every field in `fields`), rather than
+ * treating any P2002 on the table as a match. `JournalTrade` has exactly one
+ * unique index on `setupId` — the partial `JournalTrade_setupId_active_
+ * decision_key` index added for "at most one active/recorded decision per
+ * Setup" — so `["setupId"]` unambiguously identifies it. Confirmed live
+ * against Postgres: even though this index has no matching `@@unique` in
+ * schema.prisma (Prisma has no schema syntax for a partial index), Prisma
+ * still reports `meta.target: ["setupId"]` for it, the same shape as an
+ * ordinary `@@unique(["setupId"])` violation would produce.
+ */
+function isUniqueConstraintViolation(error: unknown, fields: string[]): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002" &&
+    Array.isArray(error.meta?.target) &&
+    fields.every((field) => (error.meta!.target as unknown[]).includes(field))
+  );
+}
 
 export interface CreateJournalTradeInput {
   setupId?: string | null;
@@ -32,44 +56,57 @@ export interface CreateJournalTradeInput {
  * (see getSetupTimeline) — falling back to the trade's own id otherwise.
  */
 export async function createJournalTrade(input: CreateJournalTradeInput): Promise<JournalTrade> {
-  return prisma.$transaction(async (tx) => {
-    const isSkipped = input.executionMode === "SKIPPED";
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const isSkipped = input.executionMode === "SKIPPED";
 
-    const row = await tx.journalTrade.create({
-      data: {
-        setupId: input.setupId ?? null,
-        instrumentId: input.instrumentId,
-        strategyId: input.strategyId,
-        strategyVersionId: input.strategyVersionId,
-        direction: input.direction,
-        plannedEntry: input.plannedEntry.toString(),
-        plannedStop: input.plannedStop.toString(),
-        plannedTarget1: input.plannedTarget1?.toString() ?? null,
-        plannedTarget2: input.plannedTarget2?.toString() ?? null,
-        plannedRisk: input.plannedRisk?.toString() ?? null,
-        executionMode: input.executionMode,
-        status: isSkipped ? "SKIPPED" : "PLANNED",
-        entryNotes: input.entryNotes ?? null,
-        skipReason: input.skipReason ?? null,
-      },
+      const row = await tx.journalTrade.create({
+        data: {
+          setupId: input.setupId ?? null,
+          instrumentId: input.instrumentId,
+          strategyId: input.strategyId,
+          strategyVersionId: input.strategyVersionId,
+          direction: input.direction,
+          plannedEntry: input.plannedEntry.toString(),
+          plannedStop: input.plannedStop.toString(),
+          plannedTarget1: input.plannedTarget1?.toString() ?? null,
+          plannedTarget2: input.plannedTarget2?.toString() ?? null,
+          plannedRisk: input.plannedRisk?.toString() ?? null,
+          executionMode: input.executionMode,
+          status: isSkipped ? "SKIPPED" : "PLANNED",
+          entryNotes: input.entryNotes ?? null,
+          skipReason: input.skipReason ?? null,
+        },
+      });
+
+      await createJournalEvent(
+        {
+          eventType: isSkipped ? "TRADE_SKIPPED" : "TRADE_READY",
+          entityType: "JOURNAL_TRADE",
+          entityId: row.id,
+          correlationId: input.setupId ?? row.id,
+          instrumentId: row.instrumentId,
+          strategyId: row.strategyId,
+          strategyVersionId: row.strategyVersionId,
+          metadata: isSkipped ? { skipReason: input.skipReason ?? null } : undefined,
+        },
+        tx,
+      );
+
+      return mapJournalTrade(row);
     });
-
-    await createJournalEvent(
-      {
-        eventType: isSkipped ? "TRADE_SKIPPED" : "TRADE_READY",
-        entityType: "JOURNAL_TRADE",
-        entityId: row.id,
-        correlationId: input.setupId ?? row.id,
-        instrumentId: row.instrumentId,
-        strategyId: row.strategyId,
-        strategyVersionId: row.strategyVersionId,
-        metadata: isSkipped ? { skipReason: input.skipReason ?? null } : undefined,
-      },
-      tx,
-    );
-
-    return mapJournalTrade(row);
-  });
+  } catch (error) {
+    // A genuine concurrent race behind SetupService.execute()/skip()'s
+    // app-level findJournalTradeBySetupId check-then-act guard — see
+    // JournalTradeActiveDecisionConflictError's doc comment. Only relevant
+    // when this trade targets a Setup at all (input.setupId set); a
+    // manually-logged trade with no Setup lineage can never hit this index
+    // (Postgres treats NULL as distinct across rows in a unique index).
+    if (input.setupId && isUniqueConstraintViolation(error, ["setupId"])) {
+      throw new JournalTradeActiveDecisionConflictError(input.setupId);
+    }
+    throw error;
+  }
 }
 
 export interface RecordJournalTradeEntryInput {
@@ -417,56 +454,68 @@ export interface CreateAndRecordJournalTradeEntryInput {
 export async function createAndRecordJournalTradeEntry(
   input: CreateAndRecordJournalTradeEntryInput,
 ): Promise<JournalTrade> {
-  return prisma.$transaction(async (tx) => {
-    const created = await tx.journalTrade.create({
-      data: {
-        setupId: input.setupId,
-        instrumentId: input.instrumentId,
-        strategyId: input.strategyId,
-        strategyVersionId: input.strategyVersionId,
-        direction: input.direction,
-        plannedEntry: input.plannedEntry.toString(),
-        plannedStop: input.plannedStop.toString(),
-        plannedTarget1: input.plannedTarget1?.toString() ?? null,
-        plannedTarget2: input.plannedTarget2?.toString() ?? null,
-        plannedRisk: input.plannedRisk?.toString() ?? null,
-        executionMode: input.executionMode,
-        status: "OPEN",
-        actualEntry: input.actualEntry.toString(),
-        entryTimestamp: input.entryTimestamp,
-        quantity: input.quantity,
-        estimatedFees: input.actualFees?.toString() ?? null,
-        estimatedSlippage: input.actualSlippage?.toString() ?? null,
-        entryNotes: input.notes ?? null,
-      },
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const created = await tx.journalTrade.create({
+        data: {
+          setupId: input.setupId,
+          instrumentId: input.instrumentId,
+          strategyId: input.strategyId,
+          strategyVersionId: input.strategyVersionId,
+          direction: input.direction,
+          plannedEntry: input.plannedEntry.toString(),
+          plannedStop: input.plannedStop.toString(),
+          plannedTarget1: input.plannedTarget1?.toString() ?? null,
+          plannedTarget2: input.plannedTarget2?.toString() ?? null,
+          plannedRisk: input.plannedRisk?.toString() ?? null,
+          executionMode: input.executionMode,
+          status: "OPEN",
+          actualEntry: input.actualEntry.toString(),
+          entryTimestamp: input.entryTimestamp,
+          quantity: input.quantity,
+          estimatedFees: input.actualFees?.toString() ?? null,
+          estimatedSlippage: input.actualSlippage?.toString() ?? null,
+          entryNotes: input.notes ?? null,
+        },
+      });
+
+      await createJournalEvent(
+        {
+          eventType: "TRADE_READY",
+          entityType: "JOURNAL_TRADE",
+          entityId: created.id,
+          correlationId: input.setupId,
+          instrumentId: created.instrumentId,
+          strategyId: created.strategyId,
+          strategyVersionId: created.strategyVersionId,
+        },
+        tx,
+      );
+      await createJournalEvent(
+        {
+          eventType: "TRADE_EXECUTED",
+          entityType: "JOURNAL_TRADE",
+          entityId: created.id,
+          correlationId: input.setupId,
+          instrumentId: created.instrumentId,
+          strategyId: created.strategyId,
+          strategyVersionId: created.strategyVersionId,
+          metadata: { actualEntry: input.actualEntry.toString(), quantity: input.quantity },
+        },
+        tx,
+      );
+
+      return mapJournalTrade(created);
     });
-
-    await createJournalEvent(
-      {
-        eventType: "TRADE_READY",
-        entityType: "JOURNAL_TRADE",
-        entityId: created.id,
-        correlationId: input.setupId,
-        instrumentId: created.instrumentId,
-        strategyId: created.strategyId,
-        strategyVersionId: created.strategyVersionId,
-      },
-      tx,
-    );
-    await createJournalEvent(
-      {
-        eventType: "TRADE_EXECUTED",
-        entityType: "JOURNAL_TRADE",
-        entityId: created.id,
-        correlationId: input.setupId,
-        instrumentId: created.instrumentId,
-        strategyId: created.strategyId,
-        strategyVersionId: created.strategyVersionId,
-        metadata: { actualEntry: input.actualEntry.toString(), quantity: input.quantity },
-      },
-      tx,
-    );
-
-    return mapJournalTrade(created);
-  });
+  } catch (error) {
+    // See createJournalTrade's identical catch above and
+    // JournalTradeActiveDecisionConflictError's doc comment — the same
+    // database-level backstop, for the execute() path's
+    // create-and-record-in-one-transaction variant. `input.setupId` is
+    // required (not optional) on this input type, unlike CreateJournalTradeInput.
+    if (isUniqueConstraintViolation(error, ["setupId"])) {
+      throw new JournalTradeActiveDecisionConflictError(input.setupId);
+    }
+    throw error;
+  }
 }

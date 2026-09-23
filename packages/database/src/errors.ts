@@ -103,3 +103,28 @@ export class SetupIncompletePlanError extends Error {
     Object.setPrototypeOf(this, SetupIncompletePlanError.prototype);
   }
 }
+
+/**
+ * Thrown by createJournalTrade/createAndRecordJournalTradeEntry when the
+ * insert violates the partial unique index
+ * `JournalTrade_setupId_active_decision_key` (at most one JournalTrade with
+ * status OPEN/PLANNED/SKIPPED per Setup — see that migration and the model
+ * comment on JournalTrade in prisma/schema.prisma).
+ *
+ * This is the real, database-level backstop behind SetupService.execute()'s
+ * and skip()'s existing app-level `findJournalTradeBySetupId` check-then-act
+ * guard (see setup.service.ts): that guard closes a double-click/retry, but
+ * only a genuine constraint closes a true concurrent race between two
+ * simultaneous decisions for the same Setup. Deliberately carries only
+ * `setupId`, not an action name or a caller-facing message — SetupService
+ * already knows whether it is inside execute() or skip() and constructs the
+ * exact same ConflictException message its fast-path check already throws
+ * for this situation, so a caller cannot tell which layer caught the race.
+ */
+export class JournalTradeActiveDecisionConflictError extends Error {
+  constructor(public readonly setupId: string) {
+    super(`Setup ${setupId} already has an active/recorded JournalTrade decision (setupId unique index violation)`);
+    this.name = "JournalTradeActiveDecisionConflictError";
+    Object.setPrototypeOf(this, JournalTradeActiveDecisionConflictError.prototype);
+  }
+}

@@ -1,5 +1,10 @@
 import type { ArgumentsHost } from "@nestjs/common";
-import { JournalTradeStateError, NotFoundError, SetupTransitionError } from "@trading-copilot/database";
+import {
+  JournalTradeActiveDecisionConflictError,
+  JournalTradeStateError,
+  NotFoundError,
+  SetupTransitionError,
+} from "@trading-copilot/database";
 import { describe, expect, it, vi } from "vitest";
 import { DomainErrorFilter } from "./domain-error.filter";
 
@@ -46,6 +51,18 @@ describe("DomainErrorFilter", () => {
     expect(json).toHaveBeenCalledWith(
       expect.objectContaining({
         message: "cannot close: JournalTrade status is PLANNED, required OPEN",
+      }),
+    );
+  });
+
+  it("translates JournalTradeActiveDecisionConflictError to a 409 response (fallback for callers other than SetupService.execute()/skip(), which translate it themselves)", () => {
+    const { host, status, json } = makeHost();
+    filter.catch(new JournalTradeActiveDecisionConflictError("setup-1"), host);
+
+    expect(status).toHaveBeenCalledWith(409);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: "Setup setup-1 already has an active/recorded JournalTrade decision (setupId unique index violation)",
       }),
     );
   });
