@@ -188,20 +188,20 @@ export default async function JournalTradeDetailPage({
             </div>
           </div>
           <div className="detail-item">
-            <div className="detail-item__label">MFE</div>
+            <div className="detail-item__label">MFE (points)</div>
             <div className="detail-item__value">
               {trade.mfe !== null
-                ? formatCurrency(trade.mfe)
+                ? formatDecimal(trade.mfe, 4)
                 : trade.status === "CLOSED"
                   ? NOT_ENOUGH_CANDLE_DATA
                   : "N/A"}
             </div>
           </div>
           <div className="detail-item">
-            <div className="detail-item__label">MAE</div>
+            <div className="detail-item__label">MAE (points)</div>
             <div className="detail-item__value">
               {trade.mae !== null
-                ? formatCurrency(trade.mae)
+                ? formatDecimal(trade.mae, 4)
                 : trade.status === "CLOSED"
                   ? NOT_ENOUGH_CANDLE_DATA
                   : "N/A"}
