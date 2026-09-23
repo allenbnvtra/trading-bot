@@ -3,7 +3,6 @@ import type { TradeExitReason } from "@trading-copilot/shared-types";
 import type { BacktestTrade, Candle, Instrument, StrategyVersion } from "@trading-copilot/trading-domain";
 import {
   STRATEGY_REGISTRY,
-  type EmaTrendPullbackParameters,
   type StrategyKey,
   type StrategySignal,
 } from "@trading-copilot/strategy-engine";
@@ -21,7 +20,24 @@ import { BacktesterError } from "./errors";
  * that doc must be kept in sync whenever behavior here changes.
  */
 
-export interface BacktestRunInput {
+/**
+ * The subset of a strategy's parameters every backtest actually needs at
+ * the engine level. Every STRATEGY_REGISTRY entry's parameters structurally
+ * include these two fields (see docs/backtesting-assumptions.md "Stop and
+ * target derivation": ATR-derived stops/targets are a system-wide backtest
+ * assumption, not a per-strategy choice), so this narrowing is always safe;
+ * see the single documented cast in runBacktest below.
+ */
+export interface AtrStopTargetParameters {
+  stopAtrMultiplier: number;
+  targetAtrMultiplier: number;
+}
+
+export type StrategyParametersFor<K extends StrategyKey> = Parameters<
+  (typeof STRATEGY_REGISTRY)[K]["evaluate"]
+>[1];
+
+export interface BacktestRunInput<K extends StrategyKey = StrategyKey> {
   /**
    * Which strategy implementation to resolve out of STRATEGY_REGISTRY. This
    * package has no database dependency, so it cannot look up
@@ -29,7 +45,7 @@ export interface BacktestRunInput {
    * worker, which does have DB access) resolves the key and passes it here
    * explicitly, alongside the already-validated strategyVersion.
    */
-  strategyKey: StrategyKey;
+  strategyKey: K;
   instrument: Instrument;
   /**
    * Single timeframe, single instrument, MUST be strictly increasing by
@@ -37,7 +53,7 @@ export interface BacktestRunInput {
    * out-of-order candles rather than silently producing wrong results.
    */
   candles: Candle[];
-  strategyVersion: StrategyVersion<EmaTrendPullbackParameters>;
+  strategyVersion: StrategyVersion<StrategyParametersFor<K>>;
   initialBalance: Decimal;
   riskPercentage: Decimal;
   /** Adverse slippage in ticks, applied on both entry and exit fills. */
@@ -86,7 +102,7 @@ interface OpenTradePlan {
  * Math.random(), no wall-clock reads, so calling it twice on identical
  * input always produces byte-identical output.
  */
-export function runBacktest(input: BacktestRunInput): BacktestRunResult {
+export function runBacktest<K extends StrategyKey>(input: BacktestRunInput<K>): BacktestRunResult {
   const { instrument, candles, strategyVersion, initialBalance, riskPercentage, slippageTicks } =
     input;
 
@@ -97,7 +113,20 @@ export function runBacktest(input: BacktestRunInput): BacktestRunResult {
   assertCandlesStrictlyIncreasing(candles);
 
   const strategy = STRATEGY_REGISTRY[input.strategyKey];
-  const signals = strategy.evaluate(candles, strategyVersion.parameters);
+  // Beyond what the brief's Step 7 snippet shows: with two STRATEGY_REGISTRY
+  // entries, `strategy` is a union of differently-shaped evaluators.
+  // Calling a union of functions requires an argument assignable to the
+  // *intersection* of their parameter types, which TypeScript cannot
+  // establish here even though it is true at runtime: BacktestRunInput<K>
+  // (via StrategyParametersFor<K>) already guarantees strategyVersion.parameters
+  // was validated against exactly the schema paired with this strategyKey in
+  // the registry. This is the one deliberate escape hatch for that generic
+  // dispatch, matching the AtrStopTargetParameters cast below in spirit.
+  const evaluate = strategy.evaluate as (
+    candles: Candle[],
+    parameters: unknown,
+  ) => StrategySignal[];
+  const signals = evaluate(candles, strategyVersion.parameters);
 
   const slippageAmount = new Decimal(slippageTicks).times(instrument.tickSize);
   const estimatedSlippageCost = slippageAmount.times(instrument.pointValue);
@@ -133,7 +162,10 @@ export function runBacktest(input: BacktestRunInput): BacktestRunResult {
       entryIndex,
       candles,
       slippageAmount,
-      strategyVersion.parameters,
+      // Safe per AtrStopTargetParameters' doc comment: every registered
+      // strategy's parameters structurally include stopAtrMultiplier/
+      // targetAtrMultiplier.
+      strategyVersion.parameters as AtrStopTargetParameters,
     );
 
     const riskBudget = calculateRiskBudget(initialBalance, riskPercentage);
@@ -173,7 +205,7 @@ function planEntry(
   entryIndex: number,
   candles: Candle[],
   slippageAmount: Decimal,
-  parameters: EmaTrendPullbackParameters,
+  parameters: AtrStopTargetParameters,
 ): {
   entryPrice: Decimal;
   stopPrice: Decimal;
@@ -216,7 +248,7 @@ function walkTradeForward(
   candles: Candle[],
   instrument: Instrument,
   slippageAmount: Decimal,
-  strategyVersion: StrategyVersion<EmaTrendPullbackParameters>,
+  strategyVersion: Pick<StrategyVersion<unknown>, "id">,
 ): { trade: Omit<BacktestTrade, "id" | "backtestId">; exitIndex: number } {
   const { signal, entryIndex, entryPrice, stopPrice, targetPrice, quantity, riskPerContract } =
     plan;

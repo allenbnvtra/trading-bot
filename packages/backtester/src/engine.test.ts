@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Candle } from "@trading-copilot/trading-domain";
+import { strategyDefinitionSchema } from "@trading-copilot/strategy-engine";
 import { runBacktest, type BacktestRunInput } from "./engine";
 import { BacktesterError } from "./errors";
 import {
@@ -194,6 +195,41 @@ describe("runBacktest — determinism", () => {
     const first = runBacktest(input);
     const second = runBacktest(input);
     expect(second).toEqual(first);
+  });
+});
+
+describe("runBacktest - StrategyDefinition DSL", () => {
+  it("runs an AI-generated-DSL strategy through the same engine as ema-trend-pullback, unchanged", () => {
+    const definition = strategyDefinitionSchema.parse({
+      version: "1.0.0",
+      direction: "LONG",
+      entryRules: [{ type: "EMA_CROSS_ABOVE", fastPeriod: 2, slowPeriod: 3 }],
+      atrPeriod: 2,
+      stopAtrMultiplier: 1,
+      targetAtrMultiplier: 2,
+    });
+
+    const result = runBacktest({
+      strategyKey: "ai-generated-dsl-v1",
+      instrument: makeInstrument(),
+      candles: buildBaseUptrendCandles(),
+      strategyVersion: {
+        id: "sv-dsl-1",
+        strategyId: "s-dsl",
+        version: "1.0.0",
+        name: "DSL test",
+        description: "test",
+        parameters: definition,
+        status: "DISCOVERED",
+        createdAt: new Date(),
+        sourceHypothesisId: null,
+      },
+      initialBalance: D(10000),
+      riskPercentage: D(1),
+      slippageTicks: 1,
+    });
+
+    expect(Array.isArray(result.trades)).toBe(true);
   });
 });
 

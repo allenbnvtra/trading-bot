@@ -1,9 +1,9 @@
 import Decimal from "decimal.js";
 import { z } from "zod";
 import type { Candle } from "@trading-copilot/trading-domain";
-import type { Direction } from "@trading-copilot/shared-types";
 import { calculateEma } from "../indicators/ema";
 import { calculateAtr } from "../indicators/atr";
+import type { StrategySignal } from "../types";
 
 /**
  * "EMA Trend Pullback v1.0.0" — the Milestone 1 example strategy.
@@ -43,15 +43,6 @@ export const EMA_TREND_PULLBACK_V1_DEFAULT_PARAMETERS: EmaTrendPullbackParameter
   allowLong: true,
   allowShort: true,
 };
-
-export interface StrategySignal {
-  index: number;
-  timestamp: Date;
-  direction: Direction;
-  closeAtSignal: Decimal;
-  atrAtSignal: Decimal;
-  entryReason: string;
-}
 
 /**
  * Look-ahead-safe by construction: deciding about index `i` only ever reads
@@ -126,17 +117,3 @@ export function evaluateEmaTrendPullback(
 
   return signals;
 }
-
-/**
- * Registry of strategy implementations keyed by `Strategy.key`, so callers
- * (the backtester, the API) can look up an evaluator + parameter schema
- * without hardcoding a switch statement on strategy key.
- */
-export const STRATEGY_REGISTRY = {
-  "ema-trend-pullback": {
-    parametersSchema: emaTrendPullbackParametersSchema,
-    evaluate: evaluateEmaTrendPullback,
-  },
-} as const;
-
-export type StrategyKey = keyof typeof STRATEGY_REGISTRY;

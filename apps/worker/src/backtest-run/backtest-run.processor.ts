@@ -8,8 +8,8 @@ import {
   instrumentsRepository,
   strategiesRepository,
 } from "@trading-copilot/database";
-import { STRATEGY_REGISTRY, type EmaTrendPullbackParameters, type StrategyKey } from "@trading-copilot/strategy-engine";
-import { calculateBacktestMetrics, runBacktest } from "@trading-copilot/backtester";
+import { STRATEGY_REGISTRY, type StrategyKey } from "@trading-copilot/strategy-engine";
+import { calculateBacktestMetrics, runBacktest, type StrategyParametersFor } from "@trading-copilot/backtester";
 import type { StrategyVersion } from "@trading-copilot/trading-domain";
 import { BACKTEST_RUN_QUEUE, type BacktestRunJobPayload } from "./backtest-run.constants";
 
@@ -71,8 +71,13 @@ export class BacktestRunProcessor extends WorkerHost {
       // The database layer stores parameters as untyped JSON (it has no
       // knowledge of which strategy's parameter schema applies); the
       // strategy's own evaluate() re-validates them against its Zod schema
-      // at runtime, so this cast is safe.
-      const typedStrategyVersion = strategyVersion as unknown as StrategyVersion<EmaTrendPullbackParameters>;
+      // at runtime, so this cast is safe. Widened to StrategyParametersFor<StrategyKey>
+      // (a union over every registered strategy's parameter shape, not just
+      // EmaTrendPullbackParameters) now that runBacktest is generic over any
+      // registered StrategyKey.
+      const typedStrategyVersion = strategyVersion as unknown as StrategyVersion<
+        StrategyParametersFor<StrategyKey>
+      >;
 
       // Candles are fetched over [startDate, endDate]; too few candles to
       // produce signals is handled gracefully by runBacktest/evaluate*
