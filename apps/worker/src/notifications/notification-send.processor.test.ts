@@ -221,6 +221,26 @@ describe("NotificationSendProcessor", () => {
     expect(notificationDeliveriesRepository.markNotificationRetrying).not.toHaveBeenCalled();
   });
 
+  it("marks the notification FAILED with SETUP_CONTEXT_NOT_FOUND (without rethrowing) when a Setup-context lookup fails", async () => {
+    vi.mocked(notificationDeliveriesRepository.getById).mockResolvedValue(
+      buildNotification({ notificationType: "SETUP_PREPARE" }) as never,
+    );
+    vi.mocked(setupsRepository.getSetup).mockResolvedValue(buildSetup({ status: "PREPARE" }) as never);
+    vi.mocked(instrumentsRepository.getInstrument).mockResolvedValue(null as never);
+    vi.mocked(strategiesRepository.getStrategyWithVersions).mockResolvedValue({ name: "Breakout" } as never);
+    vi.mocked(strategiesRepository.getStrategyVersion).mockResolvedValue({ version: "1.0.0" } as never);
+    const { processor, provider } = buildProcessor();
+
+    await expect(processor.process(buildJob())).resolves.toBeUndefined();
+
+    expect(provider.send).not.toHaveBeenCalled();
+    expect(notificationDeliveriesRepository.markNotificationFailed).toHaveBeenCalledWith(NOTIFICATION_ID, {
+      failureCode: "SETUP_CONTEXT_NOT_FOUND",
+      failureMessage: expect.stringContaining(SETUP_ID),
+    });
+    expect(notificationDeliveriesRepository.markNotificationRetrying).not.toHaveBeenCalled();
+  });
+
   it("marks the notification FAILED (without rethrowing) when its Setup no longer resolves", async () => {
     vi.mocked(notificationDeliveriesRepository.getById).mockResolvedValue(buildNotification() as never);
     vi.mocked(setupsRepository.getSetup).mockResolvedValue(null as never);

@@ -50,6 +50,27 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * Thrown by formatMessage when a Setup's referenced context (Instrument,
+ * Strategy, StrategyVersion, or MarketSnapshot) no longer resolves. Unlike
+ * NotificationProviderError (notification-provider.ts), this is not about
+ * the send transport - it is a dangling-foreign-key condition on the
+ * Setup itself, and it is deterministic: it will fail identically on every
+ * one of BullMQ's configured attempts, since nothing about retrying
+ * changes what rows exist in Postgres. Kept in this file (rather than
+ * notification-provider.ts) because it is specific to this processor's own
+ * Setup-context lookups, not to any NotificationProvider implementation.
+ * The processor's catch block routes this to markNotificationFailed
+ * (PERMANENT), the same as a PERMANENT NotificationProviderError - see
+ * that branch's comment for why retrying would be pointless here too.
+ */
+export class SetupContextNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SetupContextNotFoundError";
+  }
+}
+
+/**
  * The single source of truth for a status-notice's displayed SetupStatus:
  * derived from the NotificationDelivery row's own (immutable, set-at-request-time)
  * notificationType, never from a fresh read of the Setup's *current* status.
@@ -77,11 +98,15 @@ const NOTIFICATION_TYPE_TO_SETUP_STATUS: Record<SetupStatusNoticeNotificationTyp
  *
  * TEMPORARY provider errors are recorded (RETRYING) and rethrown so
  * BullMQ's own attempts/backoff (registered on NOTIFICATION_QUEUE in
- * app.module.ts) retries the job. PERMANENT provider errors are recorded
- * (FAILED) and NOT rethrown — a bad token/chat id will never succeed on
- * retry, so the job completes rather than exhausting BullMQ's attempts
- * pointlessly; the FAILED row plus its NOTIFICATION_FAILED journal event is
- * the durable record.
+ * app.module.ts) retries the job. PERMANENT provider errors and
+ * SetupContextNotFoundError (a Setup referencing a missing Instrument/
+ * Strategy/StrategyVersion/MarketSnapshot row) are both recorded (FAILED)
+ * and NOT rethrown — neither a bad token/chat id nor a dangling foreign
+ * key will ever succeed on retry, so the job completes rather than
+ * exhausting BullMQ's attempts pointlessly; the FAILED row plus its
+ * NOTIFICATION_FAILED journal event is the durable record. Any other,
+ * unclassified exception is treated conservatively as retryable
+ * (RETRYING, rethrown).
  */
 @Processor(NOTIFICATION_QUEUE)
 @Injectable()
@@ -150,18 +175,34 @@ export class NotificationSendProcessor extends WorkerHost {
         // rather than exhausting BullMQ's attempts pointlessly.
         return;
       }
+      if (error instanceof SetupContextNotFoundError) {
+        await notificationDeliveriesRepository.markNotificationFailed(notificationDeliveryId, {
+          failureCode: "SETUP_CONTEXT_NOT_FOUND",
+          failureMessage: error.message,
+        });
+        // Deliberately does not rethrow, same reasoning as the PERMANENT
+        // provider-error branch above: a missing Instrument/Strategy/
+        // StrategyVersion/MarketSnapshot row is a dangling foreign key,
+        // not a transient condition. It will fail identically on every
+        // one of BullMQ's 5 attempts, and NOTIFICATION_QUEUE has no
+        // reconciliation sweep for exhausted-attempts rows (unlike
+        // WebhookReconciliationProcessor for webhook events) - leaving
+        // this at RETRYING would eventually strand the row forever,
+        // invisible to countRecentFailedNotifications (which only counts
+        // FAILED rows). FAILED now is the honest, auditable outcome.
+        return;
+      }
       const failureCode = error instanceof NotificationProviderError ? error.failureCode : "UNKNOWN_ERROR";
       const failureMessage = error instanceof Error ? error.message : String(error);
       await notificationDeliveriesRepository.markNotificationRetrying(notificationDeliveryId, {
         failureCode,
         failureMessage,
       });
-      // Rethrow so BullMQ's attempts/backoff actually retries — this also
-      // covers a formatMessage failure (e.g. a Setup referencing a missing
-      // Instrument/Strategy row), which is just as much "worth retrying"
-      // as a transient provider error: better to leave the row at
-      // RETRYING (an honest, auditable state) than stuck at SENDING
-      // forever because only provider.send was ever wrapped.
+      // Rethrow so BullMQ's attempts/backoff actually retries. This is now
+      // the deliberately conservative fallback for a genuinely unexpected
+      // exception (e.g. a Prisma connection drop) that isn't one of the
+      // two classified cases above - not a home for Setup-context lookup
+      // failures, which have their own PERMANENT branch now.
       throw error;
     }
   }
@@ -229,7 +270,7 @@ export class NotificationSendProcessor extends WorkerHost {
     ]);
 
     if (!instrument || !strategy || !strategyVersion) {
-      throw new Error(
+      throw new SetupContextNotFoundError(
         `Setup ${setup.id} references a missing instrument/strategy/strategyVersion row ` +
           `(instrument=${Boolean(instrument)}, strategy=${Boolean(strategy)}, strategyVersion=${Boolean(strategyVersion)})`,
       );
@@ -250,7 +291,9 @@ export class NotificationSendProcessor extends WorkerHost {
 
     const marketSnapshot = await marketSnapshotsRepository.getMarketSnapshot(setup.marketSnapshotId);
     if (!marketSnapshot) {
-      throw new Error(`Setup ${setup.id} references a missing MarketSnapshot ${setup.marketSnapshotId}`);
+      throw new SetupContextNotFoundError(
+        `Setup ${setup.id} references a missing MarketSnapshot ${setup.marketSnapshotId}`,
+      );
     }
     const riskCalculation = await riskCalculationsRepository.getLatestRiskCalculation(setup.id);
 
