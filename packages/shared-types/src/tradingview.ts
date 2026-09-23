@@ -250,6 +250,24 @@ export function normalizeTradingViewPayload(
 export const TRADINGVIEW_WEBHOOK_QUEUE = "tradingview-webhook-event";
 export const TRADINGVIEW_WEBHOOK_JOB = "process";
 
+/**
+ * Shared retry policy for TRADINGVIEW_WEBHOOK_QUEUE. `defaultJobOptions` is
+ * per-Queue-*instance*, not per-queue-name: apps/api registers this queue
+ * (producer side, the original ingest enqueue in tradingview-webhook.service.ts)
+ * and apps/worker registers it again (consumer side, the Queue reference
+ * WebhookReconciliationProcessor's sweep adds jobs through) — each
+ * `BullModule.registerQueue` call creates its own Queue instance, so without
+ * passing this same constant to *both* registrations, jobs added via
+ * apps/worker's instance (every reconciliation-sweep re-enqueue) would fall
+ * back to BullMQ's bare defaults (1 attempt, no retry/backoff) even though
+ * apps/api's instance was configured correctly. See
+ * docs/tradingview-setup.md "Retry policy".
+ */
+export const TRADINGVIEW_WEBHOOK_JOB_OPTIONS = {
+  attempts: 3,
+  backoff: { type: "exponential" as const, delay: 5_000 },
+};
+
 export interface TradingViewWebhookJobPayload {
   inboundWebhookEventId: string;
 }

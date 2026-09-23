@@ -1,7 +1,7 @@
 import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
 import { ThrottlerModule } from "@nestjs/throttler";
-import { TRADINGVIEW_WEBHOOK_QUEUE } from "@trading-copilot/shared-types";
+import { TRADINGVIEW_WEBHOOK_JOB_OPTIONS, TRADINGVIEW_WEBHOOK_QUEUE } from "@trading-copilot/shared-types";
 import { TradingViewWebhookController } from "./tradingview-webhook.controller";
 import { TradingViewWebhookService } from "./tradingview-webhook.service";
 
@@ -21,19 +21,21 @@ const rateTtlSeconds = process.env.TRADINGVIEW_WEBHOOK_RATE_TTL_SECONDS
 @Module({
   imports: [
     // defaultJobOptions applies to jobs added from a Queue instance obtained
-    // through this registration - apps/api is where TradingView webhook jobs
-    // are actually enqueued (tradingview-webhook.service.ts), so a retry
-    // policy belongs here, not apps/worker's consumer-side registration.
-    // Without this, a transient failure marks the InboundWebhookEvent FAILED
-    // permanently with no automatic retry, even though the worker's own
-    // processor already has retry-safe idempotency logic built in (see
-    // ALREADY_RESOLVED_STATUSES in tradingview-webhook.processor.ts).
+    // through this registration. Both apps/api (the original ingest enqueue
+    // in tradingview-webhook.service.ts) and apps/worker (the reconciliation
+    // sweep's re-enqueue in webhook-reconciliation.processor.ts) register
+    // their own Queue instance for this same queue name, so the shared
+    // TRADINGVIEW_WEBHOOK_JOB_OPTIONS constant is passed at both registration
+    // sites - see that constant's doc comment in
+    // packages/shared-types/src/tradingview.ts for why a single registration
+    // isn't enough. Without this, a transient failure marks the
+    // InboundWebhookEvent FAILED permanently with no automatic retry, even
+    // though the worker's own processor already has retry-safe idempotency
+    // logic built in (see ALREADY_RESOLVED_STATUSES in
+    // tradingview-webhook.processor.ts).
     BullModule.registerQueue({
       name: TRADINGVIEW_WEBHOOK_QUEUE,
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: "exponential", delay: 5_000 },
-      },
+      defaultJobOptions: TRADINGVIEW_WEBHOOK_JOB_OPTIONS,
     }),
     ThrottlerModule.forRoot([
       {

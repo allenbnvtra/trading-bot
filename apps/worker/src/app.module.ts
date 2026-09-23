@@ -2,6 +2,7 @@ import { BullModule } from "@nestjs/bullmq";
 import { Module } from "@nestjs/common";
 import {
   SETUP_EXPIRATION_QUEUE,
+  TRADINGVIEW_WEBHOOK_JOB_OPTIONS,
   TRADINGVIEW_WEBHOOK_QUEUE,
   WEBHOOK_RECONCILIATION_QUEUE,
 } from "@trading-copilot/shared-types";
@@ -18,7 +19,20 @@ import { WebhookReconciliationProcessor } from "./webhook-reconciliation/webhook
       connection: createRedisConnectionOptions(),
     }),
     BullModule.registerQueue({ name: BACKTEST_RUN_QUEUE }),
-    BullModule.registerQueue({ name: TRADINGVIEW_WEBHOOK_QUEUE }),
+    // defaultJobOptions is per-Queue-instance, not per-queue-name: this app
+    // registers its own Queue instance for TRADINGVIEW_WEBHOOK_QUEUE (the
+    // one WebhookReconciliationProcessor's sweep re-enqueues jobs through),
+    // distinct from apps/api's producer-side instance
+    // (tradingview-webhook.module.ts). Without passing the same shared
+    // TRADINGVIEW_WEBHOOK_JOB_OPTIONS here too, every re-enqueue from the
+    // reconciliation sweep would silently fall back to BullMQ's bare
+    // defaults (1 attempt, no backoff) - the opposite of what the recovery
+    // path needs. See that constant's doc comment in
+    // packages/shared-types/src/tradingview.ts.
+    BullModule.registerQueue({
+      name: TRADINGVIEW_WEBHOOK_QUEUE,
+      defaultJobOptions: TRADINGVIEW_WEBHOOK_JOB_OPTIONS,
+    }),
     // defaultJobOptions applies to jobs added from a Queue instance obtained
     // through this registration - this app is where setup-expiration jobs
     // are actually enqueued (tradingview-webhook.processor.ts), so this is

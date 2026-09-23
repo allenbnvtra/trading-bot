@@ -407,14 +407,25 @@ export async function findMostRecentProcessedInboundWebhookEvent(): Promise<Inbo
  * fingerprint) but the BullMQ job that should process it was never
  * successfully enqueued, or a worker crashed before ever picking it up.
  * Consumed only by WebhookReconciliationProcessor, which re-enqueues the
- * processing job. Safety here is two layers, not one:
- *  1. BullMQ's own jobId-based dedup — the re-enqueue and the original
- *     enqueue (tradingview-webhook.service.ts) both use `jobId: event.id`,
- *     so at most one job for a given event can ever be waiting/active at a
- *     time. This is what actually prevents two workers from concurrently
- *     racing to read this row's `processingStatus` before either writes
- *     `PROCESSING` — without it, a genuine TOCTOU race was possible if the
- *     original job and a re-enqueued job both landed in the queue at once.
+ * processing job in a **job-state-aware** way (checks `queue.getJob(event.id)`
+ * before deciding what to do — see that processor's class doc comment for
+ * the full decision table). Safety here is two layers, not one:
+ *  1. BullMQ's own jobId-based dedup, together with the reconciliation
+ *     processor's job-state check — the re-enqueue and the original enqueue
+ *     (tradingview-webhook.service.ts) both use `jobId: event.id`, so a
+ *     bare `add()` alone can only ever prevent a duplicate `waiting`/
+ *     `active`/`delayed` job. Retained `failed`/`completed` job hashes
+ *     under that same id would otherwise cause a bare `add()` to silently
+ *     no-op forever (since neither queue sets `removeOnComplete`/
+ *     `removeOnFail`), which is why the processor inspects state first:
+ *     `add()` only when no job exists, `job.retry("failed")` when it's
+ *     `failed`, skip (loud warning) when it's `completed`, and skip
+ *     silently when it's genuinely still in flight (`waiting`/`active`/
+ *     `delayed`). That last case is what actually prevents two workers
+ *     from concurrently racing to read this row's `processingStatus`
+ *     before either writes `PROCESSING` — without it, a genuine TOCTOU
+ *     race was possible if the original job and a re-enqueued job both
+ *     landed in the queue at once.
  *  2. Setup.sourceWebhookEventId's DB unique constraint, kept as
  *     defense-in-depth: even if two processing attempts for the same event
  *     somehow ran concurrently, only one can ever successfully create the
