@@ -281,6 +281,23 @@ export async function getJournalTrade(id: string): Promise<JournalTrade | null> 
   return row ? mapJournalTrade(row) : null;
 }
 
+/**
+ * Used by SetupService.execute() to reject a double-submit (double-click, a
+ * retried HTTP request) against the same READY Setup: JournalTrade.setupId
+ * has no unique/one-per-setup constraint in the schema, and a Setup's own
+ * status never transitions away from READY on execute (see execute()'s doc
+ * comment), so without this check a second execute() call would silently
+ * create a second, independent OPEN JournalTrade. Filters status: "OPEN"
+ * directly in the query rather than fetching all trades for the setup and
+ * filtering client-side.
+ */
+export async function findOpenJournalTradeBySetupId(setupId: string): Promise<JournalTrade | null> {
+  const row = await prisma.journalTrade.findFirst({
+    where: { setupId, status: "OPEN" },
+  });
+  return row ? mapJournalTrade(row) : null;
+}
+
 export interface JournalTradeFilters {
   instrumentId?: string;
   strategyId?: string;

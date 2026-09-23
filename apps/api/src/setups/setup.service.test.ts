@@ -32,6 +32,7 @@ const {
   journalTradesRepository: {
     createAndRecordJournalTradeEntry: vi.fn(),
     createJournalTrade: vi.fn(),
+    findOpenJournalTradeBySetupId: vi.fn(),
   },
 }));
 
@@ -83,6 +84,7 @@ describe("SetupService", () => {
     screenshotService = { requestPreTradeScreenshot: vi.fn().mockResolvedValue({}) };
     notificationService = { requestNotification: vi.fn().mockResolvedValue(undefined) };
     service = new SetupService(screenshotService as never, notificationService as never);
+    journalTradesRepository.findOpenJournalTradeBySetupId.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -386,6 +388,47 @@ describe("SetupService", () => {
           entryTimestamp: "2026-09-23T00:00:00.000Z",
         }),
       ).rejects.toBeInstanceOf(NotFoundException);
+    });
+
+    it("rejects a second execute() call against a Setup that already has an OPEN JournalTrade (double-submit guard)", async () => {
+      const setup = makeSetup({ id: "setup-1", status: "READY" });
+      setupsRepository.getSetup.mockResolvedValue(setup);
+      journalTradesRepository.findOpenJournalTradeBySetupId.mockResolvedValue({
+        id: "trade-1",
+        status: "OPEN",
+      } as never);
+
+      await expect(
+        service.execute("setup-1", {
+          executionMode: "PAPER",
+          actualEntry: "100.5",
+          quantity: 1,
+          entryTimestamp: "2026-09-23T00:00:00.000Z",
+        }),
+      ).rejects.toBeInstanceOf(ConflictException);
+
+      expect(journalTradesRepository.findOpenJournalTradeBySetupId).toHaveBeenCalledWith("setup-1");
+      expect(journalTradesRepository.createAndRecordJournalTradeEntry).not.toHaveBeenCalled();
+    });
+
+    it("still succeeds normally when no OPEN JournalTrade exists yet for the Setup (no false-positive rejection)", async () => {
+      const setup = makeSetup({ id: "setup-1", status: "READY" });
+      setupsRepository.getSetup.mockResolvedValue(setup);
+      riskCalculationsRepository.getLatestRiskCalculation.mockResolvedValue(null);
+      journalTradesRepository.findOpenJournalTradeBySetupId.mockResolvedValue(null);
+      const created = { id: "trade-1" };
+      journalTradesRepository.createAndRecordJournalTradeEntry.mockResolvedValue(created);
+
+      const result = await service.execute("setup-1", {
+        executionMode: "PAPER",
+        actualEntry: "100.5",
+        quantity: 1,
+        entryTimestamp: "2026-09-23T00:00:00.000Z",
+      });
+
+      expect(result).toBe(created);
+      expect(journalTradesRepository.findOpenJournalTradeBySetupId).toHaveBeenCalledWith("setup-1");
+      expect(journalTradesRepository.createAndRecordJournalTradeEntry).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -193,6 +193,19 @@ export class SetupService {
       throw new ConflictException(`Setup ${setupId} is not READY — cannot record an execution against it`);
     }
 
+    // Idempotency guard against a double-submit (double-click, a retried
+    // HTTP request) against the same READY setup: the Setup's own status is
+    // deliberately never transitioned away from READY by execute() (that
+    // lifecycle stays orthogonal to "has a trade been recorded" — see this
+    // method's doc comment and skip()'s matching behavior), and
+    // JournalTrade.setupId has no unique constraint, so without this check a
+    // second call would silently create a second, independent OPEN
+    // JournalTrade for the same setup.
+    const existingOpenTrade = await journalTradesRepository.findOpenJournalTradeBySetupId(setupId);
+    if (existingOpenTrade) {
+      throw new ConflictException(`Setup ${setupId} already has an OPEN JournalTrade — cannot execute it again`);
+    }
+
     // estimatedTotalRisk (riskPerUnit * calculatedQuantity), not riskBudget
     // (the theoretical account-level allocation e.g. 1% of equity): the
     // former is the actual computed dollar risk for the sized position,
