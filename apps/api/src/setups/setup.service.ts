@@ -1,6 +1,11 @@
 import { Injectable, Logger, NotFoundException } from "@nestjs/common";
 import Decimal from "decimal.js";
-import { journalEventsRepository, riskCalculationsRepository, setupsRepository } from "@trading-copilot/database";
+import {
+  journalEventsRepository,
+  notificationDeliveriesRepository,
+  riskCalculationsRepository,
+  setupsRepository,
+} from "@trading-copilot/database";
 import type {
   CreateRiskCalculationInput,
   CreateSetupInput,
@@ -8,6 +13,7 @@ import type {
   UpdateSetupStatusInput,
 } from "@trading-copilot/shared-types";
 import type { JournalEvent, RiskCalculation, Setup } from "@trading-copilot/trading-domain";
+import { NotificationService } from "../notifications/notification.service";
 import { ScreenshotService } from "../screenshots/screenshot.service";
 
 /**
@@ -23,7 +29,10 @@ import { ScreenshotService } from "../screenshots/screenshot.service";
 export class SetupService {
   private readonly logger = new Logger(SetupService.name);
 
-  constructor(private readonly screenshotService: ScreenshotService) {}
+  constructor(
+    private readonly screenshotService: ScreenshotService,
+    private readonly notificationService: NotificationService,
+  ) {}
 
   create(input: CreateSetupInput): Promise<Setup> {
     return setupsRepository.createSetup({
@@ -82,7 +91,51 @@ export class SetupService {
       });
     }
 
+    await this.notifyForStatus(setup).catch((err: unknown) => {
+      this.logger.warn(`Failed to request notification for Setup ${setup.id} (${setup.status}): ${String(err)}`);
+    });
+
     return setup;
+  }
+
+  /**
+   * Notification policy (docs/notifications.md "Notification policy"):
+   * WATCH never notifies (dashboard-only, avoids alert spam on the noisiest
+   * state). PREPARE notifies only when NOTIFICATION_PREPARE_ENABLED=true
+   * (default off, since PREPARE is a much noisier state than READY and the
+   * brief's own stated goal for WATCH — "avoid notification spam" — applies
+   * here too; an operator opts in explicitly). READY always notifies.
+   * INVALIDATED/EXPIRED/REJECTED notify only if a PREPARE or READY
+   * notification was already SENT for this setup — an invalidation the
+   * human was never told about in the first place needs no "never mind"
+   * message.
+   */
+  private async notifyForStatus(setup: Setup): Promise<void> {
+    if (setup.status === "PREPARE") {
+      if (process.env.NOTIFICATION_PREPARE_ENABLED === "true") {
+        await this.notificationService.requestNotification(setup.id, "SETUP_PREPARE");
+      }
+      return;
+    }
+    if (setup.status === "READY") {
+      await this.notificationService.requestNotification(setup.id, "SETUP_READY");
+      return;
+    }
+    if (setup.status === "INVALIDATED" || setup.status === "EXPIRED" || setup.status === "REJECTED") {
+      const priorNotification = await notificationDeliveriesRepository.findMostRecentSentNotification(setup.id, [
+        "SETUP_PREPARE",
+        "SETUP_READY",
+      ]);
+      if (priorNotification) {
+        const notificationType =
+          setup.status === "INVALIDATED"
+            ? "SETUP_INVALIDATED"
+            : setup.status === "EXPIRED"
+              ? "SETUP_EXPIRED"
+              : "SETUP_REJECTED";
+        await this.notificationService.requestNotification(setup.id, notificationType);
+      }
+    }
   }
 
   async getTimeline(id: string): Promise<JournalEvent[]> {

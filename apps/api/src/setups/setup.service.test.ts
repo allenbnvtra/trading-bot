@@ -1,26 +1,30 @@
 import { NotFoundException } from "@nestjs/common";
 import Decimal from "decimal.js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NotFoundError, SetupTransitionError } from "@trading-copilot/database";
 import type { Setup } from "@trading-copilot/trading-domain";
 import { SetupService } from "./setup.service";
 
-const { setupsRepository, riskCalculationsRepository, journalEventsRepository } = vi.hoisted(() => ({
-  setupsRepository: {
-    createSetup: vi.fn(),
-    listSetups: vi.fn(),
-    getSetup: vi.fn(),
-    transitionSetupStatus: vi.fn(),
-  },
-  riskCalculationsRepository: {
-    createRiskCalculation: vi.fn(),
-    listRiskCalculations: vi.fn(),
-    getLatestRiskCalculation: vi.fn(),
-  },
-  journalEventsRepository: {
-    getSetupTimeline: vi.fn(),
-  },
-}));
+const { setupsRepository, riskCalculationsRepository, journalEventsRepository, notificationDeliveriesRepository } =
+  vi.hoisted(() => ({
+    setupsRepository: {
+      createSetup: vi.fn(),
+      listSetups: vi.fn(),
+      getSetup: vi.fn(),
+      transitionSetupStatus: vi.fn(),
+    },
+    riskCalculationsRepository: {
+      createRiskCalculation: vi.fn(),
+      listRiskCalculations: vi.fn(),
+      getLatestRiskCalculation: vi.fn(),
+    },
+    journalEventsRepository: {
+      getSetupTimeline: vi.fn(),
+    },
+    notificationDeliveriesRepository: {
+      findMostRecentSentNotification: vi.fn(),
+    },
+  }));
 
 vi.mock("@trading-copilot/database", async () => {
   const actual = await vi.importActual<typeof import("@trading-copilot/database")>(
@@ -31,6 +35,7 @@ vi.mock("@trading-copilot/database", async () => {
     setupsRepository,
     riskCalculationsRepository,
     journalEventsRepository,
+    notificationDeliveriesRepository,
   };
 });
 
@@ -61,11 +66,17 @@ function makeSetup(overrides: Partial<Setup> = {}): Setup {
 describe("SetupService", () => {
   let service: SetupService;
   let screenshotService: { requestPreTradeScreenshot: ReturnType<typeof vi.fn> };
+  let notificationService: { requestNotification: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
     vi.clearAllMocks();
     screenshotService = { requestPreTradeScreenshot: vi.fn().mockResolvedValue({}) };
-    service = new SetupService(screenshotService as never);
+    notificationService = { requestNotification: vi.fn().mockResolvedValue(undefined) };
+    service = new SetupService(screenshotService as never, notificationService as never);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   describe("getById", () => {
@@ -129,6 +140,72 @@ describe("SetupService", () => {
     it("does not let a screenshot-request failure fail the status transition itself", async () => {
       setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "READY" } as never);
       screenshotService.requestPreTradeScreenshot.mockRejectedValue(new Error("queue down"));
+
+      await expect(service.updateStatus("setup-1", { status: "READY" })).resolves.toMatchObject({
+        status: "READY",
+      });
+    });
+  });
+
+  describe("updateStatus notification policy", () => {
+    it("does not request a notification when transitioning to WATCH", async () => {
+      setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "WATCH" } as never);
+
+      await service.updateStatus("setup-1", { status: "WATCH" });
+
+      expect(notificationService.requestNotification).not.toHaveBeenCalled();
+    });
+
+    it("does not request a SETUP_PREPARE notification by default (NOTIFICATION_PREPARE_ENABLED unset)", async () => {
+      setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "PREPARE" } as never);
+
+      await service.updateStatus("setup-1", { status: "PREPARE" });
+
+      expect(notificationService.requestNotification).not.toHaveBeenCalled();
+    });
+
+    it("requests a SETUP_PREPARE notification when NOTIFICATION_PREPARE_ENABLED=true", async () => {
+      vi.stubEnv("NOTIFICATION_PREPARE_ENABLED", "true");
+      setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "PREPARE" } as never);
+
+      await service.updateStatus("setup-1", { status: "PREPARE" });
+
+      expect(notificationService.requestNotification).toHaveBeenCalledWith("setup-1", "SETUP_PREPARE");
+    });
+
+    it("requests a SETUP_READY notification when transitioning to READY", async () => {
+      setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "READY" } as never);
+
+      await service.updateStatus("setup-1", { status: "READY" });
+
+      expect(notificationService.requestNotification).toHaveBeenCalledWith("setup-1", "SETUP_READY");
+    });
+
+    it("requests a SETUP_INVALIDATED notification only if a SETUP_PREPARE or SETUP_READY notification was previously SENT", async () => {
+      setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "INVALIDATED" } as never);
+      notificationDeliveriesRepository.findMostRecentSentNotification.mockResolvedValue(null);
+
+      await service.updateStatus("setup-1", { status: "INVALIDATED" });
+
+      expect(notificationDeliveriesRepository.findMostRecentSentNotification).toHaveBeenCalledWith("setup-1", [
+        "SETUP_PREPARE",
+        "SETUP_READY",
+      ]);
+      expect(notificationService.requestNotification).not.toHaveBeenCalled();
+
+      notificationDeliveriesRepository.findMostRecentSentNotification.mockResolvedValue({
+        id: "notification-1",
+        status: "SENT",
+      } as never);
+
+      await service.updateStatus("setup-1", { status: "INVALIDATED" });
+
+      expect(notificationService.requestNotification).toHaveBeenCalledWith("setup-1", "SETUP_INVALIDATED");
+    });
+
+    it("never fails the status transition when notification enqueueing throws", async () => {
+      setupsRepository.transitionSetupStatus.mockResolvedValue({ id: "setup-1", status: "READY" } as never);
+      notificationService.requestNotification.mockRejectedValue(new Error("queue down"));
 
       await expect(service.updateStatus("setup-1", { status: "READY" })).resolves.toMatchObject({
         status: "READY",

@@ -15,6 +15,13 @@ export const NOTIFICATION_TEMPLATE_VERSION = "1.0.0";
 export const NOTIFICATION_SCREENSHOT_WAIT_MS = 8_000;
 export const NOTIFICATION_SCREENSHOT_POLL_INTERVAL_MS = 500;
 
+/** Mirrors ScreenshotGenerationJobPayload's shape/role — the BullMQ job body
+ * carries only the NotificationDelivery id; the worker loads everything else
+ * (setup, notification type, provider) from the row itself. */
+export interface SendNotificationJobPayload {
+  notificationDeliveryId: string;
+}
+
 const positiveDecimalString = (label: string) =>
   z
     .string()
@@ -57,3 +64,17 @@ export const notificationListQuerySchema = z.object({
   setupId: z.string().uuid().optional(),
 });
 export type NotificationListQuery = z.infer<typeof notificationListQuerySchema>;
+
+/**
+ * Whether the real Telegram provider is fully configured: TELEGRAM_ENABLED
+ * must be exactly "true" AND both TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID must be
+ * non-empty. Any one missing falls back to NOTIFICATION_MODE=console — never
+ * a half-configured attempt at the real Telegram API. Shared between
+ * apps/worker (notification-provider.factory.ts, which decides which
+ * provider to construct) and apps/api (health.service.ts, which reports
+ * providerEnabled) so the three-env-var check has exactly one implementation
+ * — apps never import from each other, only from packages/*.
+ */
+export function isTelegramConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.TELEGRAM_ENABLED === "true" && Boolean(env.TELEGRAM_BOT_TOKEN) && Boolean(env.TELEGRAM_CHAT_ID);
+}
