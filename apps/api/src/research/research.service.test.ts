@@ -192,7 +192,7 @@ describe("ResearchService.markPaperCandidate", () => {
     expect(strategiesRepository.markPaperCandidate).not.toHaveBeenCalled();
   });
 
-  it("derives the combined dataset window from every experiment and promotes when ownership and guardrails both pass", async () => {
+  it("derives the guardrail window from only FINAL_TEST/WALK_FORWARD experiments and promotes when ownership and guardrails both pass", async () => {
     const experiments = [
       makeExperiment({
         id: "experiment-research",
@@ -223,11 +223,14 @@ describe("ResearchService.markPaperCandidate", () => {
 
     await service.markPaperCandidate("hypothesis-1", "strategy-version-1");
 
-    // The earliest datasetWindowStart (RESEARCH, 2025-11-01) and latest
-    // datasetWindowEnd (WALK_FORWARD, 2026-05-01) across all three
-    // experiments, not just the FINAL_TEST/WALK_FORWARD pair.
+    // The earliest datasetWindowStart (FINAL_TEST, 2026-01-01) and latest
+    // datasetWindowEnd (WALK_FORWARD, 2026-05-01) across only the
+    // FINAL_TEST/WALK_FORWARD experiments — the RESEARCH stage's earlier
+    // 2025-11-01 start is deliberately excluded (see the service's inline
+    // comment: including it would make the guardrail easier, not harder,
+    // to pass).
     expect(researchRepository.listEnrichedJournalTradesForResearch).toHaveBeenCalledWith({
-      windowStart: new Date("2025-11-01T00:00:00.000Z"),
+      windowStart: new Date("2026-01-01T00:00:00.000Z"),
       windowEnd: new Date("2026-05-01T00:00:00.000Z"),
     });
     expect(strategiesRepository.markPaperCandidate).toHaveBeenCalledWith("strategy-version-1");

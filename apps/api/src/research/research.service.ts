@@ -211,9 +211,9 @@ export class ResearchService {
    *    would be meaningless: it would only prove hypothesisId has
    *    qualifying experiments, never that strategyVersionId is the
    *    strategy those experiments were actually run against.
-   * 3. Sample-size guardrails to pass over the combined dataset window this
-   *    hypothesis's experiments actually covered (see the inline comment
-   *    below for how that window is derived), per
+   * 3. Sample-size guardrails to pass over this hypothesis's combined
+   *    FINAL_TEST + WALK_FORWARD evaluation window (see the inline comment
+   *    below for why RESEARCH/VALIDATION are deliberately excluded), per
    *    docs/research-methodology.md and assertSampleSizeGuardrails' own doc
    *    comment in packages/analytics/src/research-summary.ts, both of which
    *    document this guardrail as gating the PAPER_CANDIDATE transition,
@@ -249,19 +249,25 @@ export class ResearchService {
     }
 
     // Sample-size guardrails over the combined dataset window (point 3
-    // above). Derived from this hypothesis's own experiments: the earliest
-    // datasetWindowStart and the latest datasetWindowEnd across every
-    // experiment stage it has run (RESEARCH through WALK_FORWARD), mirroring
-    // buildResearchDataSummary's own Math.min/Math.max derivation of a
-    // sample window from trade timestamps, rather than an arbitrary or
-    // unrelated window. `experiments` is guaranteed non-empty here (the
-    // FINAL_TEST/WALK_FORWARD check above already required at least two).
-    // Reuses the same unscoped, system-wide trade query as
-    // createExperiment's guardrail check (see that method's doc comment):
-    // ResearchHypothesis/ResearchExperiment carry no strategyId/instrumentId
-    // column to scope by.
-    const windowStart = new Date(Math.min(...experiments.map((e) => e.datasetWindowStart.getTime())));
-    const windowEnd = new Date(Math.max(...experiments.map((e) => e.datasetWindowEnd.getTime())));
+    // above). Scoped to only the FINAL_TEST and WALK_FORWARD experiments
+    // (not RESEARCH/VALIDATION): this guardrail exists to gate confidence in
+    // the evaluation data a strategy is being promoted on, so it must be
+    // checked against the actual held-out evaluation window, not widened
+    // with the earlier exploratory/training-stage window. Including
+    // RESEARCH/VALIDATION would let a hypothesis borrow trade volume/date
+    // span from its own training period to satisfy a guardrail meant to
+    // gate the evaluation stage, making it easier (not harder) to pass — the
+    // wrong direction for a safety gate. `hasCompletedFinalTest`/
+    // `hasCompletedWalkForward` above already guarantee at least one
+    // qualifying experiment of each role exists. Reuses the same unscoped,
+    // system-wide trade query as createExperiment's guardrail check (see
+    // that method's doc comment): ResearchHypothesis/ResearchExperiment
+    // carry no strategyId/instrumentId column to scope by.
+    const evaluationExperiments = experiments.filter(
+      (e) => e.datasetRole === "FINAL_TEST" || e.datasetRole === "WALK_FORWARD",
+    );
+    const windowStart = new Date(Math.min(...evaluationExperiments.map((e) => e.datasetWindowStart.getTime())));
+    const windowEnd = new Date(Math.max(...evaluationExperiments.map((e) => e.datasetWindowEnd.getTime())));
     const trades = await researchRepository.listEnrichedJournalTradesForResearch({ windowStart, windowEnd });
     const guardrails = assertSampleSizeGuardrails(buildResearchDataSummary(trades));
     if (!guardrails.passes) {
