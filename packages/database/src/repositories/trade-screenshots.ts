@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import type { ScreenshotType, TradeSource } from "@trading-copilot/shared-types";
 import type { TradeScreenshot } from "@trading-copilot/trading-domain";
 import { prisma } from "../client";
@@ -31,9 +31,11 @@ export interface RequestScreenshotInput {
  * `tx` argument. Distinct from journal-events.ts's own `PrismaClientOrTx`
  * (which only exposes `journalEvent`) because `findByIdempotencyKey` below
  * needs to run both inside a transaction and, on the P2002 retry path,
- * against the top-level client.
+ * against the top-level client. Named distinctly from journal-events.ts's
+ * type of the same shortened name to avoid confusing the two incompatible
+ * shapes for a reader jumping between files.
  */
-type PrismaClientOrTx = Pick<Prisma.TransactionClient, "tradeScreenshot">;
+type ScreenshotPrismaClientOrTx = Pick<Prisma.TransactionClient, "tradeScreenshot">;
 
 /**
  * The TradeScreenshot schema has no DB-level CHECK constraint tying `type` to
@@ -73,7 +75,7 @@ export function assertValidScreenshotTarget(input: RequestScreenshotInput): void
   }
 }
 
-function findByIdempotencyKey(tx: PrismaClientOrTx, input: RequestScreenshotInput) {
+function findByIdempotencyKey(tx: ScreenshotPrismaClientOrTx, input: RequestScreenshotInput) {
   return tx.tradeScreenshot.findFirst({
     where: input.setupId
       ? { setupId: input.setupId, type: input.type, chartConfigVersion: input.chartConfigVersion }
@@ -86,8 +88,22 @@ function findByIdempotencyKey(tx: PrismaClientOrTx, input: RequestScreenshotInpu
   });
 }
 
-function isUniqueConstraintViolation(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "P2002";
+/**
+ * Mirrors inbound-webhook-events.ts's isUniqueConstraintViolation exactly:
+ * a type-safe P2002 check that also verifies the violated constraint is
+ * actually the one this call cares about, rather than treating any P2002 on
+ * the table as a match. `fields` is the full column list of one of
+ * TradeScreenshot's two `@@unique` constraints (setup-keyed or
+ * trade-keyed) — Postgres reports the violated constraint's columns in
+ * `error.meta.target`.
+ */
+function isUniqueConstraintViolation(error: unknown, fields: string[]): boolean {
+  return (
+    error instanceof Prisma.PrismaClientKnownRequestError &&
+    error.code === "P2002" &&
+    Array.isArray(error.meta?.target) &&
+    fields.every((field) => (error.meta!.target as unknown[]).includes(field))
+  );
 }
 
 /**
@@ -157,7 +173,10 @@ export async function requestOrRetryScreenshot(
       return { screenshot: mapTradeScreenshot(created), alreadyInFlight: false };
     });
   } catch (error) {
-    if (!isUniqueConstraintViolation(error)) {
+    const constraintFields = input.setupId
+      ? ["setupId", "type", "chartConfigVersion"]
+      : ["tradeId", "tradeSource", "type", "chartConfigVersion"];
+    if (!isUniqueConstraintViolation(error, constraintFields)) {
       throw error;
     }
     const winner = await findByIdempotencyKey(prisma, input);
@@ -177,13 +196,35 @@ async function requireScreenshot(tx: Prisma.TransactionClient, id: string) {
   return row;
 }
 
+/**
+ * Guarded with an atomic conditional `updateMany` rather than the
+ * read-then-check-then-`update` pattern this module used to use. Under
+ * Postgres READ COMMITTED (no `SELECT ... FOR UPDATE`, no isolation-level
+ * override), a read-then-check-then-`update` by unique id alone lets two
+ * concurrent transactions both read the same pre-transition status, both
+ * pass the application-level guard, and both commit their `update` — the
+ * second silently clobbers the first's already-committed row with no error
+ * to either caller. `updateMany`'s `where` accepts an arbitrary filter
+ * (unlike Prisma's typed `update()`, which only accepts a unique-field
+ * `where`), and Postgres re-evaluates that filter against the row's
+ * currently-committed state at execution time inside this transaction, not a
+ * stale snapshot read earlier in the transaction — so only one of two
+ * concurrent conditional updates can ever match and affect a row. A
+ * `result.count === 0` means the guard failed (wrong state, or no such row);
+ * the actual current state is then re-fetched to report accurately in the
+ * thrown error, never guessed from the stale pre-update read.
+ */
 export async function markScreenshotGenerating(id: string): Promise<TradeScreenshot> {
   return prisma.$transaction(async (tx) => {
-    const existing = await requireScreenshot(tx, id);
-    if (existing.status !== "REQUESTED") {
-      throw new ScreenshotStateError("mark generating", existing.status, "REQUESTED");
+    const result = await tx.tradeScreenshot.updateMany({
+      where: { id, status: "REQUESTED" },
+      data: { status: "GENERATING" },
+    });
+    if (result.count === 0) {
+      const current = await requireScreenshot(tx, id);
+      throw new ScreenshotStateError("mark generating", current.status, "REQUESTED");
     }
-    const row = await tx.tradeScreenshot.update({ where: { id }, data: { status: "GENERATING" } });
+    const row = await tx.tradeScreenshot.findUniqueOrThrow({ where: { id } });
     await createJournalEvent(
       {
         eventType: "SCREENSHOT_GENERATION_STARTED",
@@ -210,19 +251,18 @@ export interface MarkScreenshotReadyInput {
 /**
  * REQUESTED or GENERATING -> READY. Never READY -> READY: a READY row is
  * immutable historical evidence, so calling this on an already-READY row
- * must throw, not silently no-op or overwrite.
+ * must throw, not silently no-op or overwrite. Guarded with an atomic
+ * conditional `updateMany` — see markScreenshotGenerating's doc comment for
+ * why the previous read-then-check-then-`update` pattern was not actually
+ * race-free under concurrency.
  */
 export async function markScreenshotReady(
   id: string,
   input: MarkScreenshotReadyInput,
 ): Promise<TradeScreenshot> {
   return prisma.$transaction(async (tx) => {
-    const existing = await requireScreenshot(tx, id);
-    if (existing.status !== "GENERATING" && existing.status !== "REQUESTED") {
-      throw new ScreenshotStateError("mark ready", existing.status, "GENERATING");
-    }
-    const row = await tx.tradeScreenshot.update({
-      where: { id },
+    const result = await tx.tradeScreenshot.updateMany({
+      where: { id, status: { in: ["REQUESTED", "GENERATING"] } },
       data: {
         status: "READY",
         storageProvider: input.storageProvider,
@@ -233,6 +273,11 @@ export async function markScreenshotReady(
         renderedAt: input.renderedAt,
       },
     });
+    if (result.count === 0) {
+      const current = await requireScreenshot(tx, id);
+      throw new ScreenshotStateError("mark ready", current.status, "REQUESTED or GENERATING");
+    }
+    const row = await tx.tradeScreenshot.findUniqueOrThrow({ where: { id } });
     await createJournalEvent(
       {
         eventType: "SCREENSHOT_CREATED",
@@ -256,21 +301,29 @@ export interface MarkScreenshotFailedInput {
  * REQUESTED or GENERATING -> FAILED. Guarded the same way as
  * markScreenshotReady — in particular, a READY row must never be flipped to
  * FAILED (it is immutable historical evidence, not a working record that can
- * be revoked after the fact).
+ * be revoked after the fact). Also uses the atomic conditional `updateMany`
+ * guard — see markScreenshotGenerating's doc comment for the concurrency
+ * rationale. This closes the specific race the original read-then-check
+ * guard did not: a straggling markScreenshotFailed call that read a stale
+ * GENERATING snapshot before a racing markScreenshotReady call committed can
+ * no longer flip an already-committed READY row back to FAILED, because the
+ * `updateMany`'s WHERE clause is re-evaluated against the row's
+ * currently-committed status at execution time, not the stale read.
  */
 export async function markScreenshotFailed(
   id: string,
   input: MarkScreenshotFailedInput,
 ): Promise<TradeScreenshot> {
   return prisma.$transaction(async (tx) => {
-    const existing = await requireScreenshot(tx, id);
-    if (existing.status !== "GENERATING" && existing.status !== "REQUESTED") {
-      throw new ScreenshotStateError("mark failed", existing.status, "REQUESTED or GENERATING");
-    }
-    const row = await tx.tradeScreenshot.update({
-      where: { id },
+    const result = await tx.tradeScreenshot.updateMany({
+      where: { id, status: { in: ["REQUESTED", "GENERATING"] } },
       data: { status: "FAILED", failureCode: input.failureCode, failureMessage: input.failureMessage },
     });
+    if (result.count === 0) {
+      const current = await requireScreenshot(tx, id);
+      throw new ScreenshotStateError("mark failed", current.status, "REQUESTED or GENERATING");
+    }
+    const row = await tx.tradeScreenshot.findUniqueOrThrow({ where: { id } });
     await createJournalEvent(
       {
         eventType: "SCREENSHOT_FAILED",

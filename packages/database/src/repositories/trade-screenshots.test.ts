@@ -296,6 +296,59 @@ describe.skipIf(!process.env.DATABASE_URL)("trade-screenshots repository (live P
     ]);
   });
 
+  it(
+    "markScreenshotReady is genuinely race-safe under real concurrent GENERATING -> READY calls " +
+      "(Promise.allSettled with two real in-flight calls, not sequential awaits, real Postgres): " +
+      "exactly one call succeeds, the other throws ScreenshotStateError, and the row is never " +
+      "silently clobbered by the loser",
+    async () => {
+      const created = await requestOrRetryScreenshot(postTradeInput());
+      await markScreenshotGenerating(created.screenshot.id);
+
+      const inputA = {
+        storageProvider: "LOCAL_DISK",
+        storageKey: `screenshots/${created.screenshot.id}-a.png`,
+        mimeType: "image/png",
+        width: 1440,
+        height: 900,
+        renderedAt: new Date(),
+      };
+      const inputB = { ...inputA, storageKey: `screenshots/${created.screenshot.id}-b.png` };
+
+      // Both calls start from the same committed GENERATING row and race for
+      // real (Promise.allSettled over two concurrently-started calls, not
+      // "await the first, then await the second"). Against the old
+      // read-then-check-then-update guard, both would read GENERATING, both
+      // would pass the application-level check, and both would commit their
+      // update — this assertion (fulfilledCount === 1) is what would have
+      // failed against that code.
+      const results = await Promise.allSettled([
+        markScreenshotReady(created.screenshot.id, inputA),
+        markScreenshotReady(created.screenshot.id, inputB),
+      ]);
+
+      const fulfilled = results.filter((r) => r.status === "fulfilled");
+      const rejected = results.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+      expect(rejected[0]!.reason).toBeInstanceOf(ScreenshotStateError);
+
+      // The committed row must match exactly one of the two candidate
+      // storageKeys, never a hybrid or a silent overwrite of the winner's
+      // already-committed data by the loser.
+      const row = await prisma.tradeScreenshot.findUnique({ where: { id: created.screenshot.id } });
+      expect(row?.status).toBe("READY");
+      expect([inputA.storageKey, inputB.storageKey]).toContain(row?.storageKey);
+
+      // Exactly one SCREENSHOT_CREATED event was emitted: the loser's
+      // transaction rolled back (updateMany affected 0 rows, the guard threw,
+      // and the whole $transaction callback rejected), so its journal-event
+      // write was rolled back too, never double-emitted.
+      const events = await journalEventsRepository.listJournalEvents({ entityId: created.screenshot.id });
+      expect(events.filter((e) => e.eventType === "SCREENSHOT_CREATED")).toHaveLength(1);
+    },
+  );
+
   it("markScreenshotReady also allows REQUESTED -> READY directly (skipping GENERATING)", async () => {
     const created = await requestOrRetryScreenshot(postTradeInput());
     const ready = await markScreenshotReady(created.screenshot.id, {
