@@ -197,7 +197,11 @@ describe("TradingViewWebhookService", () => {
         "event-2",
       );
       expect(queue.add).toHaveBeenCalledTimes(1);
-      expect(queue.add).toHaveBeenCalledWith("process", { inboundWebhookEventId: "event-2" });
+      expect(queue.add).toHaveBeenCalledWith(
+        "process",
+        { inboundWebhookEventId: "event-2" },
+        { jobId: "event-2" },
+      );
     });
 
     it("responds with wasDuplicate: true and never enqueues a second job for a duplicate delivery", async () => {

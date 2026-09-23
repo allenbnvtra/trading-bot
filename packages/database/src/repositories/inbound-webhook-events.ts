@@ -407,11 +407,21 @@ export async function findMostRecentProcessedInboundWebhookEvent(): Promise<Inbo
  * fingerprint) but the BullMQ job that should process it was never
  * successfully enqueued, or a worker crashed before ever picking it up.
  * Consumed only by WebhookReconciliationProcessor, which re-enqueues the
- * processing job — safe to call unconditionally because
- * TradingViewWebhookProcessor is already idempotent per event id
- * (ALREADY_RESOLVED_STATUSES / Setup.sourceWebhookEventId's uniqueness), so
- * a harmless duplicate job for an event that was actually fine is never a
- * correctness problem, only a wasted no-op processing attempt.
+ * processing job. Safety here is two layers, not one:
+ *  1. BullMQ's own jobId-based dedup — the re-enqueue and the original
+ *     enqueue (tradingview-webhook.service.ts) both use `jobId: event.id`,
+ *     so at most one job for a given event can ever be waiting/active at a
+ *     time. This is what actually prevents two workers from concurrently
+ *     racing to read this row's `processingStatus` before either writes
+ *     `PROCESSING` — without it, a genuine TOCTOU race was possible if the
+ *     original job and a re-enqueued job both landed in the queue at once.
+ *  2. Setup.sourceWebhookEventId's DB unique constraint, kept as
+ *     defense-in-depth: even if two processing attempts for the same event
+ *     somehow ran concurrently, only one can ever successfully create the
+ *     Setup row (TradingViewWebhookProcessor's ALREADY_RESOLVED_STATUSES
+ *     check plus this constraint) — but note this constraint alone does
+ *     NOT protect this InboundWebhookEvent row's own processingStatus/
+ *     failure columns, which is why layer 1 is required.
  */
 export async function findStaleInboundWebhookEvents(olderThan: Date): Promise<InboundWebhookEvent[]> {
   const rows = await prisma.inboundWebhookEvent.findMany({

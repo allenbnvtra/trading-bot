@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { Queue } from "bullmq";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createRedisConnectionOptions } from "../common/redis-connection";
 import { WebhookReconciliationProcessor } from "./webhook-reconciliation.processor";
 
 const { inboundWebhookEventsRepository } = vi.hoisted(() => ({
@@ -63,8 +65,16 @@ describe("WebhookReconciliationProcessor", () => {
     await processor.process({} as any);
 
     expect(webhookQueue.add).toHaveBeenCalledTimes(2);
-    expect(webhookQueue.add).toHaveBeenCalledWith(expect.any(String), { inboundWebhookEventId: "event-1" });
-    expect(webhookQueue.add).toHaveBeenCalledWith(expect.any(String), { inboundWebhookEventId: "event-2" });
+    expect(webhookQueue.add).toHaveBeenCalledWith(
+      expect.any(String),
+      { inboundWebhookEventId: "event-1" },
+      { jobId: "event-1" },
+    );
+    expect(webhookQueue.add).toHaveBeenCalledWith(
+      expect.any(String),
+      { inboundWebhookEventId: "event-2" },
+      { jobId: "event-2" },
+    );
   });
 
   it("does nothing when no events are stale", async () => {
@@ -74,5 +84,46 @@ describe("WebhookReconciliationProcessor", () => {
     await processor.process({} as any);
 
     expect(webhookQueue.add).not.toHaveBeenCalled();
+  });
+});
+
+describe("WebhookReconciliationProcessor jobId dedup (real BullMQ against Redis)", () => {
+  // Proves the actual mechanism the jobId fix relies on: BullMQ's own
+  // dedup-by-jobId behavior, not a mock of it. A dedicated queue name keeps
+  // this isolated from the real "tradingview-webhook-event" queue any
+  // running worker might be consuming from. This is a real Queue instance
+  // against the local Redis (docker compose) — not a mock — since the point
+  // is to prove BullMQ's real behavior, per the fix ruling.
+  const queueName = `webhook-reconciliation-dedup-test-${Date.now()}`;
+  let queue: Queue<{ inboundWebhookEventId: string }>;
+
+  beforeEach(() => {
+    queue = new Queue(queueName, { connection: createRedisConnectionOptions() });
+  });
+
+  afterEach(async () => {
+    await queue.obliterate({ force: true });
+    await queue.close();
+  });
+
+  it("adding a job with the same jobId from two call sites results in only one job in the queue", async () => {
+    const eventId = "event-jobid-dedup-test";
+
+    // Shape mirrors the "original ingest" enqueue in tradingview-webhook.service.ts.
+    const original = await queue.add("process", { inboundWebhookEventId: eventId }, { jobId: eventId });
+    // Shape mirrors WebhookReconciliationProcessor's re-enqueue for the same event.
+    const reEnqueued = await queue.add("process", { inboundWebhookEventId: eventId }, { jobId: eventId });
+
+    // BullMQ returns the existing job (a no-op) rather than creating a
+    // second one when a job with that jobId is already waiting/active.
+    expect(reEnqueued.id).toBe(original.id);
+
+    const waiting = await queue.getWaiting();
+    const active = await queue.getActive();
+    const delayed = await queue.getDelayed();
+    const jobsForEvent = [...waiting, ...active, ...delayed].filter(
+      (job) => job.data.inboundWebhookEventId === eventId,
+    );
+    expect(jobsForEvent).toHaveLength(1);
   });
 });

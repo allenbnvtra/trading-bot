@@ -113,7 +113,15 @@ export class TradingViewWebhookService implements OnModuleDestroy {
     }
 
     await inboundWebhookEventsRepository.markInboundWebhookEventQueued(event.id);
-    await this.webhookQueue.add(TRADINGVIEW_WEBHOOK_JOB, { inboundWebhookEventId: event.id });
+    // jobId: event.id is the id apps/worker's WebhookReconciliationProcessor
+    // reuses when re-enqueuing a stale event, so BullMQ's own jobId-based
+    // dedup guarantees at most one job for this event is ever
+    // waiting/active at a time — see that processor's doc comment.
+    await this.webhookQueue.add(
+      TRADINGVIEW_WEBHOOK_JOB,
+      { inboundWebhookEventId: event.id },
+      { jobId: event.id },
+    );
     await this.publishWebhookReceived(event);
 
     return { id: event.id, processingStatus: "QUEUED" };

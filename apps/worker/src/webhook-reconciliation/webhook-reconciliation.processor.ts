@@ -21,10 +21,17 @@ const INTERVAL_MINUTES = process.env.WEBHOOK_RECONCILIATION_INTERVAL_MINUTES
 /**
  * Sweeps for InboundWebhookEvents stuck at RECEIVED/QUEUED past a stale
  * threshold and re-enqueues their processing job. See
- * findStaleInboundWebhookEvents's doc comment for why unconditional
- * re-enqueue is safe: TradingViewWebhookProcessor is already idempotent per
- * event id. This never touches Setup creation directly — it only ever
- * re-triggers the same processing path a fresh delivery would take.
+ * findStaleInboundWebhookEvents's doc comment for the full safety
+ * mechanism: the re-enqueue below passes `jobId: event.id`, the exact same
+ * id `tradingview-webhook.service.ts` uses for the original enqueue, so
+ * BullMQ's own jobId-based dedup guarantees at most one job for a given
+ * event can ever be waiting/active at a time — this is what actually
+ * prevents two workers from concurrently reading `processingStatus` before
+ * either writes `PROCESSING` (a TOCTOU race the DB unique constraint alone
+ * doesn't close, since it only guards `Setup` creation, not the
+ * `InboundWebhookEvent` audit row). This never touches Setup creation
+ * directly — it only ever re-triggers the same processing path a fresh
+ * delivery would take.
  */
 @Processor(WEBHOOK_RECONCILIATION_QUEUE)
 export class WebhookReconciliationProcessor extends WorkerHost implements OnModuleInit {
@@ -71,7 +78,15 @@ export class WebhookReconciliationProcessor extends WorkerHost implements OnModu
     );
 
     for (const event of stale) {
-      await this.webhookQueue.add(TRADINGVIEW_WEBHOOK_JOB, { inboundWebhookEventId: event.id });
+      // jobId: event.id must match the id used at the original enqueue site
+      // (tradingview-webhook.service.ts's ingestWebhook) — see this
+      // processor's class doc comment for why that shared id is what makes
+      // this re-enqueue race-free, not just "idempotent-safe."
+      await this.webhookQueue.add(
+        TRADINGVIEW_WEBHOOK_JOB,
+        { inboundWebhookEventId: event.id },
+        { jobId: event.id },
+      );
     }
   }
 }
