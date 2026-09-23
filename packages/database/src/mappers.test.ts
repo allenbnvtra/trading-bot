@@ -29,7 +29,6 @@ import {
   type PrismaSetupRow,
   type PrismaStrategyRow,
   type PrismaStrategyVersionRow,
-  type PrismaTradeScreenshotRow,
 } from "./mappers";
 
 describe("mapInstrument", () => {

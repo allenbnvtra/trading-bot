@@ -14,7 +14,7 @@ Market snapshots, the Setup lifecycle (WATCH/PREPARE/READY/REJECTED/INVALIDATED/
 
 Rejected/skipped setups remain fully queryable, never deleted. `PostTradeAnalysis` and `TradeScreenshot` exist as schema foundations only — nothing auto-populates them yet.
 
-## Milestone 3 — TradingView webhook ingestion + live setup state machine (complete, current)
+## Milestone 3 — TradingView webhook ingestion + live setup state machine (complete)
 
 `POST /webhooks/tradingview`: durable, idempotent (database-unique-constraint-backed), asynchronous ingestion via BullMQ, validated/versioned payloads, explicit instrument/strategy resolution (never auto-created, never "latest"), realtime dashboard updates over WebSocket (Redis pub/sub between `apps/worker` and `apps/api`), and a `/live-setups` dashboard. See `docs/tradingview-setup.md` and `docs/tradingview-security.md`.
 
@@ -24,7 +24,7 @@ The WATCH → PREPARE → READY → INVALIDATED / EXPIRED / REJECTED state machi
 
 ## Milestone 5 — Chart screenshot generation (complete)
 
-Internal chart renderer over stored candles (`apps/dashboard`'s two internal-only render routes), Playwright screenshot capture (`apps/worker`), PRE_TRADE / POST_TRADE image types, a database-constraint-backed idempotent/immutable `TradeScreenshot` lifecycle (`REQUESTED`/`GENERATING`/`READY`/`FAILED`), a dedicated `packages/screenshot-storage` package (local disk today, swappable for S3-compatible storage later), and dashboard screenshot status/thumbnails. See `docs/screenshot-design.md`.
+Internal chart renderer over stored candles (`apps/dashboard`'s two internal-only render routes), Playwright screenshot capture (`apps/worker`), PRE_TRADE / POST_TRADE image types, a `TradeScreenshot` lifecycle (`REQUESTED`/`GENERATING`/`READY`/`FAILED`) that is idempotent by database constraint and immutable by convention (no exposed update path ever touches a `READY` row, the same pattern `JournalEvent` uses), a dedicated `packages/screenshot-storage` package (local disk today, swappable for S3-compatible storage later), and dashboard screenshot status/thumbnails. See `docs/screenshot-design.md`.
 
 The candle cutoff enforced for every rendered chart (`timestamp <= cutoff`, with the cutoff read server-side from a real `MarketSnapshot`/`JournalTrade` row, never wall-clock time) is the same anti-look-ahead discipline this project applies everywhere else; the PRE_TRADE render route is structurally unable to import or call any journal/trades endpoint.
 
