@@ -1,5 +1,22 @@
 {
   "$schema": "https://turbo.build/schema.json",
+  "globalPassThroughEnv": [
+    "DATABASE_URL",
+    "REDIS_URL",
+    "API_PORT",
+    "REALTIME_CORS_ORIGIN",
+    "TRADINGVIEW_WEBHOOK_RATE_LIMIT",
+    "TRADINGVIEW_WEBHOOK_RATE_TTL_SECONDS",
+    "NEXT_PUBLIC_API_BASE_URL",
+    "DASHBOARD_PORT",
+    "WORKER_CONCURRENCY",
+    "DASHBOARD_INTERNAL_BASE_URL",
+    "SCREENSHOT_STORAGE_ROOT",
+    "TRADINGVIEW_SETUP_EXPIRY_MINUTES",
+    "WEBHOOK_RECONCILIATION_STALE_THRESHOLD_MINUTES",
+    "WEBHOOK_RECONCILIATION_INTERVAL_MINUTES",
+    "NODE_ENV"
+  ],
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
