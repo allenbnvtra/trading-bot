@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HealthService } from "./health.service";
 
 vi.mock("@trading-copilot/database", () => ({
@@ -10,6 +10,10 @@ vi.mock("@trading-copilot/database", () => ({
   tradeScreenshotsRepository: {
     findMostRecentReadyScreenshot: vi.fn(),
     countRecentFailedScreenshots: vi.fn(),
+  },
+  notificationDeliveriesRepository: {
+    findMostRecentSentNotificationOverall: vi.fn(),
+    countRecentFailedNotifications: vi.fn(),
   },
 }));
 
@@ -34,7 +38,11 @@ vi.mock("@trading-copilot/screenshot-storage", () => ({
   resolveScreenshotStorageRoot: vi.fn((root: string) => root),
 }));
 
-import { inboundWebhookEventsRepository, tradeScreenshotsRepository } from "@trading-copilot/database";
+import {
+  inboundWebhookEventsRepository,
+  notificationDeliveriesRepository,
+  tradeScreenshotsRepository,
+} from "@trading-copilot/database";
 import { LocalDiskScreenshotStorage } from "@trading-copilot/screenshot-storage";
 
 /** Neutral default so tests focused on the other subsystem don't also have to stub this one. */
@@ -50,6 +58,39 @@ function stubScreenshotGenerationUnknown(): void {
   vi.mocked(tradeScreenshotsRepository.findMostRecentReadyScreenshot).mockResolvedValue(null);
   vi.mocked(tradeScreenshotsRepository.countRecentFailedScreenshots).mockResolvedValue(0);
 }
+
+/**
+ * Neutral default so tests focused on the other subsystems don't also have
+ * to stub this one: relies on the file-level `beforeEach` below to leave all
+ * four Telegram/NOTIFICATION_MODE env vars unset (DISABLED — the
+ * short-circuit path that never even queries the repositories), plus
+ * resolved-but-unused repository stubs in case a future refactor changes the
+ * DISABLED short-circuit and starts querying regardless.
+ */
+function stubNotificationsDisabled(): void {
+  vi.mocked(notificationDeliveriesRepository.findMostRecentSentNotificationOverall).mockResolvedValue(null);
+  vi.mocked(notificationDeliveriesRepository.countRecentFailedNotifications).mockResolvedValue(0);
+}
+
+/** Sets all three TELEGRAM_* env vars so isTelegramConfigured() reports true. */
+function enableTelegramCredentials(): void {
+  process.env.NOTIFICATION_MODE = "telegram";
+  process.env.TELEGRAM_ENABLED = "true";
+  process.env.TELEGRAM_BOT_TOKEN = "test-bot-token";
+  process.env.TELEGRAM_CHAT_ID = "test-chat-id";
+}
+
+// Reset the notification env vars before every test in this file,
+// regardless of describe-block order, so a test that calls
+// enableTelegramCredentials() can never leak TELEGRAM_*/NOTIFICATION_MODE
+// into an unrelated test (e.g. the ingestion/screenshot describe blocks
+// above, which never touch these vars themselves).
+beforeEach(() => {
+  delete process.env.TELEGRAM_ENABLED;
+  delete process.env.TELEGRAM_BOT_TOKEN;
+  delete process.env.TELEGRAM_CHAT_ID;
+  delete process.env.NOTIFICATION_MODE;
+});
 
 /**
  * `HealthService` instantiates its own `LocalDiskScreenshotStorage` as a
@@ -199,5 +240,103 @@ describe("HealthService.checkScreenshotStorage (via check())", () => {
 
     expect(result.screenshotStorage).toBe("down");
     expect(result.status).toBe("degraded");
+  });
+});
+
+describe("HealthService notification check", () => {
+  it("reports DISABLED when NOTIFICATION_MODE is console and TELEGRAM_ENABLED is not true", async () => {
+    stubIngestionUnknown();
+    stubScreenshotGenerationUnknown();
+    stubNotificationsDisabled();
+    process.env.NOTIFICATION_MODE = "console";
+
+    const result = await new HealthService().check();
+
+    expect(result.notifications).toEqual({
+      status: "DISABLED",
+      providerEnabled: false,
+      lastSuccessfulNotificationAt: null,
+      recentFailureCount: 0,
+    });
+    // DISABLED never queries the delivery repositories at all.
+    expect(notificationDeliveriesRepository.findMostRecentSentNotificationOverall).not.toHaveBeenCalled();
+    expect(notificationDeliveriesRepository.countRecentFailedNotifications).not.toHaveBeenCalled();
+    // DISABLED never pulls the overall status down.
+    expect(result.status).toBe("ok");
+  });
+
+  it("reports UNKNOWN when Telegram is enabled but no notification has ever been sent", async () => {
+    stubIngestionUnknown();
+    stubScreenshotGenerationUnknown();
+    enableTelegramCredentials();
+    vi.mocked(notificationDeliveriesRepository.findMostRecentSentNotificationOverall).mockResolvedValue(
+      null,
+    );
+    vi.mocked(notificationDeliveriesRepository.countRecentFailedNotifications).mockResolvedValue(0);
+
+    const result = await new HealthService().check();
+
+    expect(result.notifications.status).toBe("UNKNOWN");
+    expect(result.notifications.providerEnabled).toBe(true);
+    expect(result.notifications.lastSuccessfulNotificationAt).toBeNull();
+    // UNKNOWN never pulls the overall status down (same rule as a
+    // freshly-seeded ingestion/screenshot subsystem).
+    expect(result.status).toBe("ok");
+  });
+
+  it("reports DEGRADED when a recent FAILED notification exists", async () => {
+    stubIngestionUnknown();
+    stubScreenshotGenerationUnknown();
+    enableTelegramCredentials();
+    vi.mocked(notificationDeliveriesRepository.findMostRecentSentNotificationOverall).mockResolvedValue(
+      null,
+    );
+    vi.mocked(notificationDeliveriesRepository.countRecentFailedNotifications).mockResolvedValue(2);
+
+    const result = await new HealthService().check();
+
+    expect(result.notifications.status).toBe("DEGRADED");
+    expect(result.notifications.recentFailureCount).toBe(2);
+    expect(result.status).toBe("degraded");
+  });
+
+  it("reports HEALTHY only when Telegram is enabled, configured, AND at least one notification has actually SENT — never HEALTHY merely because credentials exist", async () => {
+    stubIngestionUnknown();
+    stubScreenshotGenerationUnknown();
+    enableTelegramCredentials();
+
+    // First: credentials alone, with no SENT notification, must NOT be
+    // reported HEALTHY. This is the brief's explicit "do not report HEALTHY
+    // simply because credentials exist" requirement.
+    vi.mocked(notificationDeliveriesRepository.findMostRecentSentNotificationOverall).mockResolvedValue(
+      null,
+    );
+    vi.mocked(notificationDeliveriesRepository.countRecentFailedNotifications).mockResolvedValue(0);
+
+    const credentialsOnlyResult = await new HealthService().check();
+
+    expect(credentialsOnlyResult.notifications.providerEnabled).toBe(true);
+    expect(credentialsOnlyResult.notifications.status).not.toBe("HEALTHY");
+    expect(credentialsOnlyResult.notifications.status).toBe("UNKNOWN");
+
+    // Now: credentials AND a real SENT NotificationDelivery row — this is
+    // the only combination that earns HEALTHY.
+    const sentNotification = {
+      sentAt: new Date("2026-03-01T00:00:00Z"),
+    };
+    vi.mocked(notificationDeliveriesRepository.findMostRecentSentNotificationOverall).mockResolvedValue(
+      sentNotification as never,
+    );
+    vi.mocked(notificationDeliveriesRepository.countRecentFailedNotifications).mockResolvedValue(0);
+
+    const result = await new HealthService().check();
+
+    expect(result.notifications).toEqual({
+      status: "HEALTHY",
+      providerEnabled: true,
+      lastSuccessfulNotificationAt: "2026-03-01T00:00:00.000Z",
+      recentFailureCount: 0,
+    });
+    expect(result.status).toBe("ok");
   });
 });

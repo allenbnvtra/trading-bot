@@ -1,12 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { Injectable, type OnModuleDestroy } from "@nestjs/common";
 import Redis from "ioredis";
-import { inboundWebhookEventsRepository, prisma, tradeScreenshotsRepository } from "@trading-copilot/database";
+import {
+  inboundWebhookEventsRepository,
+  notificationDeliveriesRepository,
+  prisma,
+  tradeScreenshotsRepository,
+} from "@trading-copilot/database";
 import {
   LocalDiskScreenshotStorage,
   resolveScreenshotStorageRoot,
   type ScreenshotStorage,
 } from "@trading-copilot/screenshot-storage";
+import { isTelegramConfigured } from "@trading-copilot/shared-types";
 
 export interface TradingViewIngestionHealth {
   status: "ONLINE" | "DEGRADED" | "UNKNOWN";
@@ -20,6 +26,13 @@ export interface ScreenshotGenerationHealth {
   recentFailureCount: number;
 }
 
+export interface NotificationHealth {
+  status: "HEALTHY" | "DEGRADED" | "DISABLED" | "UNKNOWN";
+  providerEnabled: boolean;
+  lastSuccessfulNotificationAt: string | null;
+  recentFailureCount: number;
+}
+
 export interface HealthStatus {
   status: "ok" | "degraded";
   postgres: "up" | "down";
@@ -27,6 +40,7 @@ export interface HealthStatus {
   tradingViewIngestion: TradingViewIngestionHealth;
   screenshotGeneration: ScreenshotGenerationHealth;
   screenshotStorage: "up" | "down";
+  notifications: NotificationHealth;
 }
 
 /**
@@ -36,6 +50,18 @@ export interface HealthStatus {
  * is not reported DEGRADED forever.
  */
 const RECENT_FAILURE_WINDOW_MINUTES = 60;
+
+/**
+ * Whether Telegram is enabled at all, for the purposes of deciding between
+ * DISABLED and everything else. Distinct from `isTelegramConfigured()`
+ * (all three TELEGRAM_* env vars fully set) - NOTIFICATION_MODE=telegram
+ * with an incomplete TELEGRAM_* configuration is a real misconfiguration
+ * worth surfacing as DEGRADED/UNKNOWN rather than silently reported
+ * DISABLED, mirroring the `providerEnabled` check in the Task 10 brief.
+ */
+function notificationModeIsTelegram(): boolean {
+  return process.env.NOTIFICATION_MODE === "telegram";
+}
 
 /**
  * Real dependency checks, not a hardcoded { status: "ok" }. A trivial
@@ -66,13 +92,14 @@ export class HealthService implements OnModuleDestroy {
   );
 
   async check(): Promise<HealthStatus> {
-    const [postgresUp, redisUp, tradingViewIngestion, screenshotGeneration, screenshotStorageUp] =
+    const [postgresUp, redisUp, tradingViewIngestion, screenshotGeneration, screenshotStorageUp, notifications] =
       await Promise.all([
         this.checkPostgres(),
         this.checkRedis(),
         this.checkTradingViewIngestion(),
         this.checkScreenshotGeneration(),
         this.checkScreenshotStorage(),
+        this.checkNotifications(),
       ]);
 
     // Folding tradingViewIngestion into the overall status: DEGRADED (the
@@ -83,13 +110,23 @@ export class HealthService implements OnModuleDestroy {
     // TradingView alerts fired yet is a perfectly healthy state, not a
     // degraded one. screenshotGeneration follows the identical rule: only
     // DEGRADED (a recent FAILED row exists) pulls the overall status down;
-    // UNKNOWN (no screenshot ever generated yet) does not.
+    // UNKNOWN (no screenshot ever generated yet) does not. notifications
+    // follows the identical rule: only DEGRADED (a recent FAILED row
+    // exists) pulls the overall status down; DISABLED (Telegram not
+    // configured, a normal local-dev/console-mode state) and UNKNOWN
+    // (Telegram configured but nothing sent yet) do not.
     const ingestionIsHealthy = tradingViewIngestion.status !== "DEGRADED";
     const screenshotGenerationIsHealthy = screenshotGeneration.status !== "DEGRADED";
+    const notificationIsHealthy = notifications.status !== "DEGRADED";
 
     return {
       status:
-        postgresUp && redisUp && ingestionIsHealthy && screenshotGenerationIsHealthy && screenshotStorageUp
+        postgresUp &&
+        redisUp &&
+        ingestionIsHealthy &&
+        screenshotGenerationIsHealthy &&
+        screenshotStorageUp &&
+        notificationIsHealthy
           ? "ok"
           : "degraded",
       postgres: postgresUp ? "up" : "down",
@@ -97,6 +134,7 @@ export class HealthService implements OnModuleDestroy {
       tradingViewIngestion,
       screenshotGeneration,
       screenshotStorage: screenshotStorageUp ? "up" : "down",
+      notifications,
     };
   }
 
@@ -177,6 +215,52 @@ export class HealthService implements OnModuleDestroy {
       };
     } catch {
       return { status: "UNKNOWN", lastSuccessfulScreenshotAt: null, recentFailureCount: 0 };
+    }
+  }
+
+  /**
+   * Uses the same two-dedicated-indexed-query shape as
+   * checkScreenshotGeneration -
+   * findMostRecentSentNotificationOverall (backed by `[status, sentAt]`)
+   * and countRecentFailedNotifications (backed by `[status, updatedAt]`) -
+   * rather than listing every NotificationDelivery. See
+   * packages/database/src/repositories/notification-deliveries.ts.
+   *
+   * DISABLED is reported before either query runs whenever Telegram is not
+   * configured AND NOTIFICATION_MODE is not "telegram" - a normal local-dev
+   * state (NOTIFICATION_MODE=console, no Telegram credentials) that is not
+   * a health problem. Once past that gate, HEALTHY is never reported merely
+   * because credentials exist (`providerEnabled: true`) - it requires a real
+   * NotificationDelivery row that actually reached SENT. Configured-but-
+   * nothing-sent-yet reports UNKNOWN, the same "no evidence yet, not
+   * necessarily broken" verdict checkScreenshotGeneration gives an instrument
+   * with no screenshots. A recent FAILED row always reports DEGRADED,
+   * regardless of whether an earlier SENT row also exists.
+   */
+  private async checkNotifications(): Promise<NotificationHealth> {
+    try {
+      const providerEnabled = isTelegramConfigured();
+
+      if (!providerEnabled && !notificationModeIsTelegram()) {
+        return { status: "DISABLED", providerEnabled: false, lastSuccessfulNotificationAt: null, recentFailureCount: 0 };
+      }
+
+      const [mostRecentSent, recentFailureCount] = await Promise.all([
+        notificationDeliveriesRepository.findMostRecentSentNotificationOverall(),
+        notificationDeliveriesRepository.countRecentFailedNotifications(RECENT_FAILURE_WINDOW_MINUTES),
+      ]);
+
+      const status: NotificationHealth["status"] =
+        recentFailureCount > 0 ? "DEGRADED" : mostRecentSent ? "HEALTHY" : "UNKNOWN";
+
+      return {
+        status,
+        providerEnabled,
+        lastSuccessfulNotificationAt: mostRecentSent?.sentAt?.toISOString() ?? null,
+        recentFailureCount,
+      };
+    } catch {
+      return { status: "UNKNOWN", providerEnabled: false, lastSuccessfulNotificationAt: null, recentFailureCount: 0 };
     }
   }
 
